@@ -118,6 +118,7 @@ MAX_EINSATZ_WATCHES_PER_USER = 10  # max. temporäre Einsatz-Beobachtungen pro U
 MAX_WATCHES_PER_USER = 20     # Gesamtobergrenze (orte + einsatz_watches) — Spam-Schutz
 WATCH_LIMIT_BAN_HOURS = 12  # Auto-Bann-Dauer bei wiederholtem Limit-Missbrauch
 WATCH_LIMIT_BAN_AFTER = 3   # Anzahl Limit-Warnungen bis zum Auto-Ban
+UNREG_PURGE_DAYS = 7        # Nie-registrierte Bot-Kontakte werden nach 7 Tagen gelöscht
 # ═══ Token laden ═══
 BOT_TOKEN = None
 ADMIN_ID = None
@@ -1855,6 +1856,55 @@ def execute_delete(cid_str):
     except Exception as e:
         logger.error(f"Endgültige Löschung fehlgeschlagen für {cid_str}: {e}")
         return False
+
+_purge_last = [0.0]
+def check_unregistered_purge():
+    """Räumt nie-registrierte Bot-Kontakte ab (1-Stunden-Takt): Wer den Bot gestartet hat, sich aber
+    innerhalb von UNREG_PURGE_DAYS (7 Tage) nicht per /registrieren angemeldet hat,
+    wird komplett gelöscht (users.json + State). Registrierte und Admins bleiben
+    unangetastet. Kontakt-Eintrag ohne added_at bleibt sicherheitshalber bestehen."""
+    import time as _t
+    if _t.time() - _purge_last[0] < 3600:
+        return
+    _purge_last[0] = _t.time()
+    now = datetime.now()
+    zu_loeschen = []
+    for cid_str, ud in list(users["users"].items()):
+        if ud.get("registered"):
+            continue  # registriert → bleibt (Sirs Regel)
+        if ud.get("is_admin"):
+            continue
+        try:
+            if not ud.get("added_at"):
+                continue  # kein Datum → sicherheitshalber nicht anfassen
+            alter = now - datetime.fromisoformat(str(ud["added_at"]))
+            if alter.days >= UNREG_PURGE_DAYS:
+                zu_loeschen.append(cid_str)
+        except (ValueError, TypeError):
+            continue  # kaputtes Datum → nicht löschen
+    for cid_str in zu_loeschen:
+        first_name = "?"
+        try:
+            execute_delete(cid_str)
+            logger.info(f"UNREG-PURGE: nie-registrierter Kontakt nach {UNREG_PURGE_DAYS} Tagen gelöscht: {cid_str}")
+            try:
+                send_to(int(cid_str), (
+                    f"\U0001f9f9 <b>Automatisch aufger\u00e4umt</b>\n\n"
+                    f"Du hast den Bot vor mehr als {UNREG_PURGE_DAYS} Tagen gestartet, dich aber "
+                    f"nie mit <code>/registrieren</code> angemeldet. Dein Eintrag wurde daher "
+                    f"gel\u00f6scht.\n\nWillst du ihn weiter nutzen? Einfach wieder "
+                    f"<code>/start</code> senden und mit <code>/registrieren &lt;Name&gt;</code> anmelden."))
+            except Exception:
+                pass
+            try:
+                send_to(ADMIN_ID, (
+                    f"\U0001f9f9 <b>Nie-registrierter Kontakt gel\u00f6scht</b>\n"
+                    f"ID {cid_str} hat den Bot vor ≥{UNREG_PURGE_DAYS} Tagen gestartet, "
+                    f"hat sich aber nie registriert — automatisch gel\u00f6scht."))
+            except Exception:
+                pass
+        except Exception as e:
+            logger.error(f"UNREG-PURGE fehlgeschlagen für {cid_str}: {e}")
 
 def check_user_removals():
     """Lösch-Wächter: vergleicht users.json gegen den Snapshot vom Vorzyklus.
@@ -4814,6 +4864,11 @@ def main():
             handle_bot_commands()
             # Lösch-Wächter: Admin-Info, wenn ein User aus users.json verschwindet
             check_user_removals()
+            # Nie-registrierte Kontakte nach 7 Tagen aufräumen (interner 1-Stunden-Takt)
+            try:
+                check_unregistered_purge()
+            except Exception as purge_err:
+                logger.debug(f"UNREG-Purge Fehler: {purge_err}")
             # Zwei-Stufen-Löschung: letzte Nachfrage nach 2 Wochen + Auto-Abbruch bei Nichtreaktion
             check_loesch_nachfragen()
             # Onboarding: neue Nutzer bekommen Anleitung + Datenschutz einmalig pro ID
