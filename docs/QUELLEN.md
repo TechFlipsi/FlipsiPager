@@ -27,9 +27,10 @@ FlipsiPager arbeitet ausschließlich mit **öffentlich zugänglichen Quellen**. 
 
 ## 5. Netz OÖ — Stromausfälle
 
-- **URL:** https://www.netzooe.at
+- **URL:** https://www.netzooe.at / https://status.netzooe.at
 - **Nutzung:** Gesetzlich vorgeschriebene Störungsveröffentlichung (robots.txt erlaubt Abruf explizit)
 - **Nutzung im Bot:** Stromausfall-Übersicht pro Bezirk (`/strom`, Stromausfall-Watch)
+- **⚠️ Wichtige Einschränkung:** Die Daten decken **nur das Versorgungsgebiet der Netz OÖ GmbH** ab. In OÖ gibt es weitere Netzbetreiber mit eigenen Gebieten — **LINZ NETZ GmbH** (Linz AG: Stadt Linz + Umgebung), **eww Wels** (Stadt Wels, Thalheim, Teile von Buchkirchen, Gunskirchen, Marchtrenk, Steinhaus) und **Energie Ried** (Stadtgemeinde Ried + Umgebung). Wer in einem dieser Gebiete wohnt, bekommt beim `/strom`-Befehl **vermutlich falsche Daten** (Störungen des eigenen Netzbetreibers fehlen — die Karte zeigt nur das Netz-OÖ-Netz). Der Befehl sagt das nicht aktiv — das ist die größte bekannte Datenlücke des Bots.
 
 ## 6. Lawinenwarndienst OÖ
 

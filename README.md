@@ -101,6 +101,11 @@ Nein, die Datenquellen sind oberösterreichisch (OOELFV, Netz OÖ, Hydro OÖ …
 </details>
 
 <details>
+<summary><b>Stromausfälle: Mein Netzbetreiber ist nicht Netz OÖ — was zeigt /strom an?</b></summary>
+Der Befehl fragt nur die Störungskarte der <b>Netz OÖ GmbH</b> ab. In OÖ gibt es weitere Netzbetreiber mit eigenen Gebieten: LINZ NETZ (Linz AG), eww Wels und Energie Ried. Wer dort wohnt (z. B. in Linz oder Wels-Stadt), bekommt <b>vermutlich falsche bzw. unvollständige Daten</b> — Störungen des eigenen Netzbetreibers fehlen. Details: <a href="docs/QUELLEN.md">docs/QUELLEN.md, Quelle 5</a>.
+</details>
+
+<details>
 <summary><b>Kostet das was?</b></summary>
 Nein. Auf einem vorhandenen Pi entstehen keine laufenden Kosten. Ein eigener Telegram-Bot ist kostenlos.
 </details>
