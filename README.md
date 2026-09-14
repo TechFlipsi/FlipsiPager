@@ -115,6 +115,38 @@ Standard-Limit 2000 (einstellbar). Realistisch: Bis einige hundert Benutzer läu
 Die Daten deiner Benutzer liegen nur auf deinem Gerät (Chat-ID, Name, beobachtete Orte — keine Adressen). Der Bot bringt DSGVO-Werkzeuge mit: Datenschutz-Info (/datenschutz), DSGVO-Auskunft (/meinedaten), Selbstlöschung mit 2-Stufen-Bestätigung (/vergessen). Du bist als Betreiber für den rechtskonformen Umgang verantwortlich.
 </details>
 
+## 🐳 Docker (Alternative zum Pi)
+
+Wer den Bot lieber in einem Container betreibt (NAS, VPS, Homelab):
+
+```bash
+# 1. Verzeichnis anlegen und Bot-Token + Admin-ID setzen
+mkdir data
+# 2. Image bauen & starten (docker compose)
+FW_BOT_TOKEN=dein-token FW_ADMIN_ID=deine-chat-id docker compose up -d
+```
+
+Oder direkt mit `docker run`:
+
+```bash
+docker run -d --name feuerwehr-monitor \
+  -e FW_BOT_TOKEN=dein-token \
+  -e FW_ADMIN_ID=deine-chat-id \
+  -e FW_FF_NAME="Deine Feuerwehr" \
+  -v $(pwd)/data:/data \
+  --restart unless-stopped \
+  feuerwehr-monitor:latest
+```
+
+**Wichtig:** Das `data`-Verzeichnis muss dem Container-Nützer gehören:
+
+```bash
+sudo chown -R 1000:1000 data
+```
+
+Alle Einstellungen laufen über Umgebungsvariablen (`FW_BOT_TOKEN`, `FW_ADMIN_ID`, `FW_FF_NAME`, `FW_ORG_ID`, `FW_POLL_INTERVAL`, `FW_MAX_USERS`, `TZ`) — die schreibt der Container beim Start automatisch in die Config unter `/data`.
+
+
 ## 🗺️ Roadmap
 
 - [x] v1.0.0 — Selbsthosting-Release (Installations-Assistent, Anleitung)

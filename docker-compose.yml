@@ -1,0 +1,18 @@
+services:
+  feuerwehr-monitor:
+    build: .
+    image: feuerwehr-monitor:latest
+    container_name: feuerwehr-monitor
+    restart: unless-stopped
+    environment:
+      # ── Pflicht (in .env-Datei neben der docker-compose.yml setzen) ──
+      - FW_BOT_TOKEN=${FW_BOT_TOKEN:?Bitte in .env setzen: FW_BOT_TOKEN=dein-bot-token}
+      - FW_ADMIN_ID=${FW_ADMIN_ID:?Bitte in .env setzen: FW_ADMIN_ID=deine-chat-id}
+      # ── Optional ─────────────────────────────────────────────
+      - FW_FF_NAME=${FW_FF_NAME:-Musterwehr}
+      - FW_ORG_ID=${FW_ORG_ID:-}
+      - FW_POLL_INTERVAL=${FW_POLL_INTERVAL:-60}
+      - FW_MAX_USERS=${FW_MAX_USERS:-2000}
+      - TZ=${TZ:-Europe/Vienna}
+    volumes:
+      - ./data:/data                       # alle Bot-Daten persistent
