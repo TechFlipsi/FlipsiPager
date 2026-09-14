@@ -170,8 +170,15 @@ def init_users():
             "added_at": datetime.now().isoformat()
         }
         save_users(data)
-    elif FF_NAME not in data["users"][admin_str].get("orte", []):
-        data["users"][admin_str].setdefault("orte", []).append(FF_NAME)
+    else:
+        admin_orte = data["users"][admin_str].setdefault("orte", [])
+        # Wechsel der Stamm-Feuerwehr: der alte Default-Watch 'Offenhausen' ist ein
+        # Konfigurations-Rest, kein bewusst gesetzter Beobachtungswunsch — er weicht.
+        if admin_orte == ["Offenhausen"] and FF_NAME != "Offenhausen":
+            admin_orte = [FF_NAME]
+        elif FF_NAME not in admin_orte:
+            admin_orte.append(FF_NAME)
+        data["users"][admin_str]["orte"] = admin_orte
         save_users(data)
     # Admin-Rechte + Registrierung immer wiederherstellen (falls durch Auto-Bann entfernt)
     admin_modified = False
@@ -700,8 +707,11 @@ def find_einsaetze_at_org_id(ort_name):
             if len(candidates) == 1:
                 return idx[candidates[0]]
             if candidates:
-                logger.info(f"einsaetze.at: {len(candidates)} Kandidaten für '{ort_name}': {candidates[:3]} — nehme exakt-prefix")
-                pref = sorted(candidates, key=len)[0]
+                # Mehrere Substring-Treffer (z. B. 'bach' in 'steinbach an der steyr'):
+                # Längster Kandidat passt am besten zum Suchbegriff — nicht der kürzeste,
+                # der zufällig überall als Teilstring vorkommt.
+                pref = max(candidates, key=len)
+                logger.info(f"einsaetze.at: {len(candidates)} Kandidaten für '{ort_name}': {candidates[:3]} — nehme '{pref}'")
                 return idx[pref]
     except Exception as e:
         logger.debug(f"Index-Lookup Fehler: {e}")
@@ -1825,7 +1835,7 @@ def loesch_nachfrage_stellen(cid_str, at, alter_days):
         f"<code>/vergessen ja {token2}</code>\n\n"
         f"<b>Nein, abbrechen und alles zur\u00fcckholen:</b>\n"
         f"<code>/abbruch</code>\n\n"
-        f"\u2139\ufe0f Antworest du innerhalb von {LOESCH_REASK_GRACE_HOURS} Stunden nicht, "
+        f"\u2139\ufe0f Antwortest du innerhalb von {LOESCH_REASK_GRACE_HOURS} Stunden nicht, "
         f"brechen wir die L\u00f6schung sicherheitshalber automatisch ab \u2014 dann ist alles wieder da."))
     try:
         uname = (at.get("user_data", {}) or {}).get("username") or "?"
@@ -2096,12 +2106,6 @@ def tts_text_erzeugen(text):
         if ogg_path and os.path.exists(ogg_path) and os.path.getsize(ogg_path) > 500:
             with open(ogg_path, "rb") as f:
                 data = f.read()
-        for pth in (wav_path, ogg_path):
-            try:
-                if pth_ist_str(pth:=p) if False else False:
-                    pass
-            except Exception:
-                pass
         for pth in (wav_path, (ogg_path or "")):
             try:
                 if pth and os.path.exists(pth):
@@ -2436,7 +2440,9 @@ def lawine_status(tage_zurueck=1):
     """Aktuelles OÖ-Lawinenbulletin (CAAML). Saison aus (Dez–Apr) → Hinweis."""
     from datetime import timedelta as _td
     for offset in range(0, tage_zurueck + 1):
-        tag = (datetime.utcnow() - _td(days=offset)).strftime("%Y-%m-%d")
+        # Bulletin-Pfade nach Lokaldatum (Europe/Vienna) bilden — utcnow hätte nachts
+        # (bis ~01/02 Uhr) das Vortags-Datum und fände den frischen Morgen-Bericht nicht.
+        tag = (datetime.now() - _td(days=offset)).strftime("%Y-%m-%d")
         u = f"{LAWINEN_BASE}/{tag}/{tag}_{LAWINEN_REGION}_de_CAAMLv6.json"
         try:
             r = urllib.request.urlopen(urllib.request.Request(u, headers={"User-Agent": UA_NOMINATIM}), timeout=20)
@@ -2981,7 +2987,7 @@ def handle_bot_commands():
                 }
                 save_users(users)
                 # Admin-Info: JEDER neue Bot-Kontakt wird gemeldet
-                # (nicht erst bei /registrieren) — Sir will sehen, wer den Bot startet.
+                # (nicht erst bei /registrieren) — Der Admin will sehen, wer den Bot startet.
                 send_to(ADMIN_ID, (
                     f"\U0001f465 \U0001f195 \U0001f539 <b>Neuer Bot-Kontakt</b>\n"
                     f"\U0001f194 ID: <code>{chat_id}</code>\n"
@@ -3336,7 +3342,7 @@ def handle_bot_commands():
                     logger.warning(f"LOESCHUNG ENDGÜLTIG (Stufe 2 ja): {chat_id} — 2 Wochen Wartezeit bestanden, 2x ja")
                     send_to(ADMIN_ID, (
                         f"\U0001f5d1\ufe0f <b>Benutzer endgültig gelöscht</b>\n"
-                        f"Nützer {esc((at_self.get('user_data', {}) or {}).get('username') or '?')} "
+                        f"Nutzer {esc((at_self.get('user_data', {}) or {}).get('username') or '?')} "
                         f"(ID {chat_id}) hat sich AUCH NACH DEN 2 WOCHEN Wartezeit f\u00fcrs L\u00f6schen entschieden "
                         f"(2. ja-Best\u00e4tigung).\n"
                         f"Benutzername, Beobachtungen und Zugang sind jetzt vollst\u00e4ndig entfernt."))
@@ -3593,7 +3599,17 @@ def handle_bot_commands():
 
             elif text == "/offenhausen":
                 try:
-                    url2 = "https://www.einsaetze.at/organizations/%s" % FF_ORG_ID
+                    # Org-ID fehlt in der Config → automatisch über den FF-Index suchen
+                    # (gleiches Verfahren wie bei /training, sonst ginge der Befehl
+                    # bei der Default-Konfiguration ohne org_id kaputt).
+                    org2 = FF_ORG_ID or find_einsaetze_at_org_id(FF_NAME)
+                    if not org2:
+                        send_to(chat_id, (
+                            f"\u26a0\ufe0f Keine einsaetze.at-Org-ID für {esc(FF_NAME)} gefunden \u2014 "
+                            "Historie-Befehl deaktiviert.\n"
+                            "Org-ID in ~/.config/fw_bot/fw_bot.conf ([feuerwehr] org_id) nachtragen."))
+                        continue
+                    url2 = "https://www.einsaetze.at/organizations/%s" % org2
                     req2 = urllib.request.Request(url2, headers={"User-Agent": "Mozilla/5.0"})
                     with urllib.request.urlopen(req2, timeout=15) as resp2:
                         html2 = resp2.read().decode("utf-8", errors="replace")
@@ -3816,7 +3832,7 @@ def handle_bot_commands():
                     if orte:
                         msg += f"<b>Orte (dauerhaft):</b>\n"
                         for i, w in enumerate(orte):
-                            tag = " \U0001f451" if (is_admin and w.lower() == "offenhausen") else ""
+                            tag = " \U0001f451" if (is_admin and w.lower() == FF_NAME.lower()) else ""
                             filt = ort_typen.get(w)
                             suffix = " <i>(nur %s)</i>" % esc(filt) if filt else ""
                             msg += f"  {i+1}. {esc(w)}{tag}{suffix}\n"
@@ -4599,7 +4615,7 @@ def handle_bot_commands():
 
 # ═══ Onboarding: Anleitung + Datenschutz einmalig pro ID ═══
 def send_onboarding_if_needed():
-    """Nach der Registrierung bekommen neue Nützer einmalig automatisch die
+    """Nach der Registrierung bekommen neue Nutzer einmalig automatisch die
     Anleitung + die Datenschutz-Info (einmal pro ID, Feld intro_sent in
     users.json). /anleitung und /datenschutz bleiben jederzeit verfügbar."""
     changed = False
@@ -4653,7 +4669,7 @@ def main():
             check_user_removals()
             # Zwei-Stufen-Löschung: letzte Nachfrage nach 2 Wochen + Auto-Abbruch bei Nichtreaktion
             check_loesch_nachfragen()
-            # Onboarding: neue Nützer bekommen Anleitung + Datenschutz einmalig pro ID
+            # Onboarding: neue Nutzer bekommen Anleitung + Datenschutz einmalig pro ID
             send_onboarding_if_needed()
             # Unwetter-Bewachung: beobachtete Orte auf aktive Warnungen prüfen (interner 10-Min-Takt)
             try:

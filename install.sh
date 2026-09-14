@@ -36,13 +36,15 @@ if command -v sudo >/dev/null 2>&1; then SUDO="sudo"; fi
 say "Prüfe System-Voraussetzungen…"
 command -v python3 >/dev/null 2>&1 || die "python3 nicht gefunden. Installiere es: sudo apt install python3"
 PYV=$(python3 -c 'import sys; print("%d.%d" % sys.version_info[:2])')
-python3 - "$PYV" <<'EOF'
+if ! python3 - "$PYV" <<'EOF'
 import sys
 v = sys.argv[1].split(".")
 ok = (int(v[0]), int(v[1])) >= (3, 10)
 sys.exit(0 if ok else 1)
 EOF
-[ $? -eq 0 ] || die "Python 3.11+ nötig, gefunden: $PYV"
+then
+    die "Python 3.10+ nötig, gefunden: $PYV"
+fi
 say "Python $PYV ✓ (empfohlen 3.11+)"
 
 # systemd vorhanden UND laufend? (Container/WSL haben oft systemctl-Binary ohne laufenden Daemon)
@@ -124,9 +126,17 @@ if [ -z "$ADMIN_ID" ]; then
 import json, sys
 try:
     d = json.load(sys.stdin)
-    res = d.get("result", [])
-    if res:
-        print(res[0]["message"]["chat"]["id"])
+    for upd in d.get("result", []):
+        # Erst normale Nachricht, sonst editierte Nachricht oder Button-Klick —
+        # alle drei enthalten die Chat-ID des Absenders.
+        m = upd.get("message") or upd.get("edited_message")
+        if m and m.get("chat", {}).get("id"):
+            print(m["chat"]["id"])
+            break
+        cq = upd.get("callback_query")
+        if cq and cq.get("from", {}).get("id"):
+            print(cq["from"]["id"])
+            break
 except Exception:
     pass
 ' 2>/dev/null || true)
