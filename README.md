@@ -70,7 +70,7 @@ Fehlt die Datei, läuft der Bot mit Standard-Werten (Poll 5 s) — für Heimat-I
 | `/statistik`, `/rueckblick`, `/wochen` | Auswertungen |
 | `/stumm 22-7` | Stillfenster (Alarme sammeln, morgens zustellen) |
 | `/testalarm` | Alarm-Kette prüfen |
-| `/quellen` | Alle Datenquellen anzeigen |
+| `/quellen` | Alle Datenquellen anzeigen — [Details](docs/QUELLEN.md) |
 | `/datenschutz`, `/vergessen`, `/meinedaten` | DSGVO |
 | `/hilfe` | Alle Befehle |
 
