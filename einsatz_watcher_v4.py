@@ -540,6 +540,7 @@ def handle_callback(cq):
                 return
             # Nur anlegen, wenn der Einsatz noch läuft (keine toten Temp-Watches)
             laeuft = None
+            beendet_info = None  # Einsatz-Objekt vom Tag-Abruf (für Abschlussbericht-Ersatz)
             try:
                 einsatzliste_cb = parse_einsaetze_full(fetch_ooelfv(SOURCE_URL)) or []
                 ort_lower = ort.lower()
@@ -548,10 +549,57 @@ def handle_callback(cq):
                     if ort_lower in e.get("ort", "").lower():
                         laeuft = True
                         break
+                if not laeuft:
+                    # Einsatz auf der aktuell-Liste schon abgeräumt? Tag-Liste prüfen:
+                    # Steht er dort mit Endzeit, ist er BEENDET — dann bekommt der User
+                    # direkt den Abschlussbericht als Ersatz (statt nur dem Toast).
+                    tag_e_cb = parse_einsaetze_full(get_tag_html()) or []
+                    for te in tag_e_cb:
+                        if ort_lower in te.get("ort", "").lower():
+                            beendet_info = te
+                            break
             except Exception:
                 laeuft = None  # Abruf-Fehler: nicht blockieren (Alarm-Logik mehrtägig greift weiter)
             if laeuft is False:
-                _answer_cb(cbid, f"Einsatz in {ort} läuft nicht mehr.")
+                _answer_cb(cbid, f"Einsatz in {ort} läuft nicht mehr — Info unten.")
+                # In-Chat-Abschlussbericht als Ersatz (der Button versprach Meldungen,
+                # die kommen aber nie mehr — der Einsatz ist längst fertig):
+                if beendet_info:
+                    te = beendet_info
+                    end_fw = te.get("feuerwehren", [])
+                    endzeiten = [fw["end"] for fw in end_fw if fw.get("end")]
+                    end_zeit = endzeiten[-1] if endzeiten else None
+                    fw0 = end_fw[0] if end_fw else {}
+                    start = fw0.get("start", "?")
+                    msg_beendet = (
+                        f"ℹ️ <b>Einsatz in {esc(ort)} wurde bereits beendet</b> — "
+                        "die Beobachtung wurde daher nicht angelegt.\n\n"
+                        f"✅ <b>EINSATZ BEENDET</b>\n"
+                        f"📋 {esc(te.get('typ', ''))} {esc(te.get('stichwort', ''))}\n"
+                        f"📍 {esc(te.get('ort', '?'))} ({esc(te.get('bezirk', '?'))})\n"
+                        f"⏱️ Dauer: {calc_dauer(fw0.get('start', '?'), end_zeit)}\n"
+                        f"👥 {len(end_fw)} Feuerwehr(en):")
+                    for fw in end_fw:
+                        z = f"\n  • {esc(fw['name'])}: "
+                        if fw.get("end"):
+                            z += f"{fw['start'].split()[-1]}–{fw['end'].split()[-1]} ({calc_dauer(fw['start'], fw['end'])})"
+                        elif end_zeit:
+                            z += f"{fw['start'].split()[-1]}–{end_zeit.split()[-1]} ({calc_dauer(fw['start'], end_zeit)})"
+                        else:
+                            z += f"{fw['start'].split()[-1]}"
+                        msg_beendet += z
+                    try:
+                        send_to(from_id, msg_beendet)
+                    except Exception:
+                        pass
+                else:
+                    # Nicht mal auf der Tag-Seite (älter/heute nicht gefunden):
+                    try:
+                        send_to(from_id, ("ℹ️ Der Einsatz in '" + esc(ort) + "' läuft nicht mehr "
+                                          "(beendet oder bereits von der Einsatzliste entfernt) — "
+                                          "daher wurde keine Beobachtung angelegt."))
+                    except Exception:
+                        pass
                 return
             einkl.append(ort)
             ud["einsatz_watches"] = einkl
@@ -1116,6 +1164,7 @@ def check_user_watches(chat_id, user_data, einsaetze_all, suppress=False):
     temp_keys = set()
     matched = []
     matched_by = {}
+    beendet_flags = []  # parallel zu meldungen: True = BEENDET-Meldung (wird auch bei suppress gesendet)
     # Typ-Filter: ort_typen[chat_id als key im user_data? — liegt im user_data selbst]
     ort_filter = user_data.get("ort_typen") or {}
     for e in einsaetze_all:
@@ -1193,6 +1242,7 @@ def check_user_watches(chat_id, user_data, einsaetze_all, suppress=False):
                 f"\u23f1\ufe0f Alarm: {start} (seit {calc_dauer(start)})\n"
                 f"\U0001f50d Beobachtet: {esc(wt)}"
             )
+            beendet_flags.append(False)
             melde_kbs.append({"inline_keyboard": [[btn_karte_url(e.get("ort", "")), btn_navi_url(e.get("ort", ""))]]})
 
     # Beendete Einsätze
@@ -1277,6 +1327,7 @@ def check_user_watches(chat_id, user_data, einsaetze_all, suppress=False):
             _kb_row_b = ([{"text": "⭐ Ort dauerhaft beobachten", "callback_data": _cb_safe("ao:", e.get("ort", ""))}] if is_temp_watch and _cb_safe("ao:", e.get("ort", "")) else []) + [btn_karte_url(e.get("ort", "")), btn_navi_url(e.get("ort", ""))]
             melde_kbs.append({"inline_keyboard": [_kb_row_b] if _kb_row_b else []})
             meldungen.append(msg)
+            beendet_flags.append(True)
 
     # Aktualisierte Einsätze
     for k in aktueller_stand:
@@ -1311,6 +1362,24 @@ def check_user_watches(chat_id, user_data, einsaetze_all, suppress=False):
                 )
                 melde_kbs.append({"inline_keyboard": [[btn_karte_url(neu.get("ort", "")), btn_navi_url(neu.get("ort", ""))]]})
                 meldungen.append(msg)
+                beendet_flags.append(False)
+
+    # BEENDET-Meldungen (beendet_flags=True) werden AUCH beim ersten Zyklus nach
+    # einem Bot-Neustart gesendet — der User hat bewusst auf Beobachten geklickt und
+    # wartet auf den Abschlussbericht. Suppress (first_cycle) unterdrückt nur
+    # NEU-/UPDATE-Meldungen (sonst Restart-Flut mit allen laufenden Einsätzen).
+    if suppress:
+        neu_update = [(m, kb) for m, kb, f in zip(meldungen, melde_kbs, beendet_flags) if not f]
+        beendet_only = [(m, kb) for m, kb, f in zip(meldungen, melde_kbs, beendet_flags) if f]
+        if beendet_only:
+            # Abschlussberichte trotz first_cycle ausliefern (Bugfix: sie waren sonst
+            # für immer verloren, wenn der Einsatz zwischen Restart und erstem Check endete)
+            for m, kb in beendet_only:
+                send_to(chat_id, m, reply_markup=kb)
+            logger.info(f" BEENDET-Meldung(en) nach Neustart nachgesendet an {chat_id} ({len(beendet_only)})")
+        meldungen = [m for m, kb in neu_update]
+        melde_kbs = [kb for m, kb in neu_update]
+    # (suppress=False → alles läuft klassisch durch den Send-Block unten)
 
     if meldungen and not suppress:
         if _in_quiet_hours(user_data.get("quiet_hours")):
