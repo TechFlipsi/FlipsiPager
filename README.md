@@ -1,4 +1,10 @@
-# 🔥 FF Feuerwehr-Einsatz-Monitor
+# 🇦🇹 FF Feuerwehr-Einsatz-Monitor
+
+[![Release](https://img.shields.io/github/v/release/TechFlipsi/feuerwehr-einsatz-monitor?logo=github&label=Aktuelle%20Version)](https://github.com/TechFlipsi/feuerwehr-einsatz-monitor/releases)
+[![Lizenz](https://img.shields.io/badge/Lizenz-MIT%20%2B%20Non--Commercial-blue.svg)](LICENSE)
+[![Plattform](https://img.shields.io/badge/Plattform-Raspberry%20Pi%20%7C%20Linux-c7a07c?logo=raspberrypi&logoColor=white)](docs/ANLEITUNG.md)
+[![Sprache](https://img.shields.io/badge/Sprache-Deutsch-green.svg)](docs/ANLEITUNG.md)
+[![Stars](https://img.shields.io/github/stars/TechFlipsi/feuerwehr-einsatz-monitor?style=social)](https://github.com/TechFlipsi/feuerwehr-einsatz-monitor/stargazers)
 
 Ein **selbst hostbarer** Telegram-Bot für Feuerwehr-Einsätze in **Oberösterreich** — auf deiner eigenen Hardware. Alarm bei Einsätzen an deinen beobachteten Orten, inklusive Unwetter-Warnungen, Pegel-Überwachung, Stromausfall-Wache, Lawinenlage, Sprachalarm und vielem mehr.
 
@@ -68,12 +74,58 @@ Fehlt die Datei, läuft der Bot mit Standard-Werten (Poll 5 s) — für Heimat-I
 | `/datenschutz`, `/vergessen`, `/meinedaten` | DSGVO |
 | `/hilfe` | Alle Befehle |
 
+## 🧭 Was diesen Bot von anderen unterscheidet
+
+- **Kein Cloud-Zwang:** Läuft komplett auf deiner Hardware, offline-fähig außer den Datenquellen selbst
+- **Bewährtes Multi-User-System:** Offene Registrierung, Limits, Auto-Ban, Zwei-Stufen-Löschung — seit Monaten produktiv im Einsatz
+- **Vier Wachen in einem:** Einsatz, Unwetter, Pegel, Stromausfall — keine vier Apps, ein Bot
+- **Sprachalarm:** Der Bot ruft den Alarm zusätzlich am Ohr aus (lokale Spracherzeugung, keine Cloud-TTS)
+
 ## ⚠️ Rechtliches & Verlässlichkeit
 
 - Privates, **inoffizielles** Projekt — **keine offizielle Alarmierung!** Sirene, Funk, Pager und **Notruf 122** gehen immer vor.
 - Liest ausschließlich öffentlich zugängliche Quellen. **OÖ-Fokus** — andere Regionen werden nicht abgedeckt.
 - **Du bist Betreiber deiner Instanz** und verantwortlich für den Umgang mit den Daten deiner Benutzer (DSGVO). Der Bot liefert die Werkzeuge (Datenschutz-Info, Selbstlöschung, Auskunft) mit.
 - Kein offizielles Produkt des Oö. Landes-Feuerwehrverbandes oder der genannten Quellen.
+
+## ❓ FAQ
+
+<details>
+<summary><b>Ist der Bot offiziell?</b></summary>
+Nein — ein privates, inoffizielles Hobby-Projekt. Er liest öffentlich zugängliche Seiten aus (Liste im Bot via /quellen). Im Notfall gilt immer die offizielle Alarmierung.
+</details>
+
+<details>
+<summary><b>Funktioniert das auch außerhalb Oberösterreichs?</b></summary>
+Nein, die Datenquellen sind oberösterreichisch (OOELFV, Netz OÖ, Hydro OÖ …). Der Bot ist aber so gebaut, dass eine Anpassung an andere Quellen möglich ist — Contributions willkommen.
+</details>
+
+<details>
+<summary><b>Kostet das was?</b></summary>
+Nein. Auf einem vorhandenen Pi entstehen keine laufenden Kosten. Ein eigener Telegram-Bot ist kostenlos.
+</details>
+
+<details>
+<summary><b>Wie viele Benutzer kann meine Instanz bedienen?</b></summary>
+Standard-Limit 2000 (einstellbar). Realistisch: Bis einige hundert Benutzer läuft das problemlos auf einem Pi 4. Größere Instanzen: Poll-Intervall fair halten.
+</details>
+
+<details>
+<summary><b>Ist das sicher / DSGVO-konform?</b></summary>
+Die Daten deiner Benutzer liegen nur auf deinem Gerät (Chat-ID, Name, beobachtete Orte — keine Adressen). Der Bot bringt DSGVO-Werkzeuge mit: Datenschutz-Info (/datenschutz), DSGVO-Auskunft (/meinedaten), Selbstlöschung mit 2-Stufen-Bestätigung (/vergessen). Du bist als Betreiber für den rechtskonformen Umgang verantwortlich.
+</details>
+
+## 🗺️ Roadmap
+
+- [x] v1.0.0 — Selbsthosting-Release (Installations-Assistent, Anleitung)
+- [ ] Docker-Image (docker-compose für NAS-Betreiber)
+- [ ] Update-Skript (`update.sh`) für installierte Instanzen
+- [ ] Regionale Erweiterung (Datenquellen außerhalb OÖ) — Community-Beitrag möglich
+- [ ] Englische Oberfläche (optional, Konfig-Flag)
+
+## 🤝 Mitmachen
+
+Issues und Pull Requests sind willkommen! Für Bug-Reports: Service-Log (`journalctl -u feuerwehr-monitor -n 50`) beilegen (Zugangsdaten/Tokens unkenntlich!).
 
 ## 📜 Lizenz
 
