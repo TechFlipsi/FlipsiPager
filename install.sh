@@ -45,12 +45,12 @@ EOF
 [ $? -eq 0 ] || die "Python 3.11+ nötig, gefunden: $PYV"
 say "Python $PYV ✓ (empfohlen 3.11+)"
 
-# systemd vorhanden?
-if command -v systemctl >/dev/null 2>&1; then
+# systemd vorhanden UND laufend? (Container/WSL haben oft systemctl-Binary ohne laufenden Daemon)
+if command -v systemctl >/dev/null 2>&1 && systemctl is-system-running >/dev/null 2>&1; then
     HAS_SYSTEMD=1
 else
     HAS_SYSTEMD=0
-    warn "Kein systemd gefunden — der Bot wird per nohup gestartet (kein Autostart nach Reboot)."
+    warn "Kein laufendes systemd gefunden — der Bot wird per nohup gestartet (kein Autostart nach Reboot)."
 fi
 
 # ── 2. Bestehende Installation? ──
@@ -177,10 +177,19 @@ umask 022
 
 say "Lade Bot-Skript …"
 mkdir -p "$(dirname "$SCRIPT_PATH")"
-curl -fsSL "${REPO_RAW}/einsatz_watcher_v4.py" -o "$SCRIPT_PATH" || die "Download des Skripts fehlgeschlagen."
+if ! curl -fsSL "${REPO_RAW}/einsatz_watcher_v4.py" -o "$SCRIPT_PATH"; then
+    die "Download des Bot-Skripts fehlgeschlagen. Prüfe deine Internetverbindung und starte den Installer erneut. (Die Konfiguration bleibt erhalten — beim nächsten Lauf einfach wiederholen.)"
+fi
+if [ ! -s "$SCRIPT_PATH" ]; then
+    die "Heruntergeladene Datei ist leer — Netzwerkproblem? Installer erneut starten."
+fi
 chmod 700 "$SCRIPT_PATH"
 
 # ── 4. systemd-Service ──
+if [ "$HAS_SYSTEMD" = "1" ] && [ -z "$SUDO" ]; then
+    warn "systemd vorhanden, aber kein sudo — kann Service-Datei nicht schreiben."
+    HAS_SYSTEMD=0
+fi
 if [ "$HAS_SYSTEMD" = "1" ]; then
     say "Richte systemd-Service ein …"
     $SUDO tee "$SERVICE_FILE" >/dev/null <<UNIT
@@ -212,6 +221,13 @@ else
     say "Starte Bot im Hintergrund (nohup) …"
     nohup python3 "$SCRIPT_PATH" > "$FW_DIR/bot.log" 2>&1 &
     echo $! > "$FW_DIR/bot.pid"
+    sleep 3
+    if kill -0 "$(cat "$FW_DIR/bot.pid")" 2>/dev/null; then
+        say "Bot läuft (PID $(cat "$FW_DIR/bot.pid")). Stoppen später: kill \$(cat $FW_DIR/bot.pid)"
+    else
+        warn "Bot-Prozess gestartet aber möglicherweise sofort beendet — Log: $FW_DIR/bot.log"
+        tail -5 "$FW_DIR/bot.log" || true
+    fi
 fi
 
 echo

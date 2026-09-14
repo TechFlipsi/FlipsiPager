@@ -37,7 +37,7 @@ def _lade_fw_config():
     Die Admin-Stamm-Watch (dauerhaft aktiv) trägt den FF-Namen."""
     cfg = {
         "ff_name": "Offenhausen",       # Stamm-Feuerwehr der Instanz (Default = Original)
-        "org_id": "414113",             # einsaetze.at-Org-ID
+        "org_id": "",                   # einsaetze.at-Org-ID (leer = Auto-Findung über FF-Index)
         "admin_id_fallback": None,  # ohne fw_bot.conf Pflicht: in bot_token.env (FW_BOT_CHAT_ID) setzen
         "admin_username": "Admin",
         "poll_interval": 5,
@@ -683,7 +683,7 @@ EINSAETZE_AT_CATS = {"BRAND": "Brand", "TEE": "Technisch", "PERSON": "Personenre
 
 def find_einsaetze_at_org_id(ort_name):
     """Findet die einsaetze.at Organisations-ID fuer einen Ort."""
-    known = {FF_NAME.lower(): FF_ORG_ID}
+    known = {FF_NAME.lower(): FF_ORG_ID} if FF_ORG_ID else {}
     key = ort_name.lower().strip()
     if key in known:
         return known[key]
