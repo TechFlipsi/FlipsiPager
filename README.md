@@ -102,7 +102,7 @@ Nein, die Datenquellen sind oberösterreichisch (OOELFV, Netz OÖ, Hydro OÖ …
 
 <details>
 <summary><b>Stromausfälle: Mein Netzbetreiber ist nicht Netz OÖ — was zeigt /strom an?</b></summary>
-Der Befehl fragt nur die Störungskarte der <b>Netz OÖ GmbH</b> ab. In OÖ gibt es weitere Netzbetreiber mit eigenen Gebieten: LINZ NETZ (Linz AG), eww Wels und Energie Ried. Wer dort wohnt (z. B. in Linz oder Wels-Stadt), bekommt <b>vermutlich falsche bzw. unvollständige Daten</b> — Störungen des eigenen Netzbetreibers fehlen. Details: <a href="docs/QUELLEN.md">docs/QUELLEN.md, Quelle 5</a>.
+Der Befehl fragt nur die Störungskarte der <b>Netz OÖ GmbH</b> ab. In OÖ gibt es weitere Netzbetreiber mit eigenen Gebieten (LINZ NETZ, eww Wels, Energie Ried) — keiner von ihnen veröffentlicht abfragbare Störungsdaten. Der Bot weist beim Hinzufügen solcher Orte aktiv darauf hin; alle übrigen Wachen (Einsätze, Unwetter, Pegel …) funktionieren dort normal. Details: <a href="docs/NETZBETREIBER.md">docs/NETZBETREIBER.md</a>.
 </details>
 
 <details>

@@ -523,6 +523,12 @@ def handle_callback(cq):
             save_users(users)
             logger.info(f"Callback-Ort hinzugefügt: {ort} von User {from_id}")
             _answer_cb(cbid, f"⭐ {ort} wird jetzt dauerhaft beobachtet.")
+            hinweis = _strom_fremd_hinweis(ort)
+            if hinweis:
+                try:
+                    send_to(from_id, hinweis)
+                except Exception:
+                    pass
         else:
             einkl = ud.get("einsatz_watches", [])
             if ort.lower() in [w.lower() for w in einkl]:
@@ -2176,6 +2182,30 @@ ORT_BEZIRK = {
     "st. martin im innkreis": "Ried im Innkreis",
 }
 
+# Orte, die NICHT im Netz-OÖ-Versorgungsgebiet liegen (eigene Netzbetreiber mit
+# eigenen Gebieten). Die Störungskarte deckt sie NICHT ab — der Bot weist beim
+# Hinzufügen aktiv darauf hin. Details/Begründung: docs/NETZBETREIBER.md im Repo.
+# Nur SICHERE Zuordnungen (Städte-Gebiete); 'Teile von'-Gemeinden (Buchkirchen,
+# Gunskirchen, Marchtrenk, Steinhaus — Grenze eww/Netz OÖ unklar) bewusst NICHT
+# markiert, um falsche Warnungen zu vermeiden.
+STROM_FREMD_GEBIETE = {
+    "linz": "LINZ NETZ (Linz AG)",
+    "wels": "eww Wels",
+    "thalheim bei wels": "eww Wels",
+    "ried im innkreis": "Energie Ried",
+    "ried": "Energie Ried",
+}
+
+def _strom_fremd_hinweis(ort):
+    """Hinweistext für einen Ort außerhalb des Netz-OÖ-Versorgungsgebiets (oder '')."""
+    betreiber = STROM_FREMD_GEBIETE.get(ort.lower().strip())
+    if not betreiber:
+        return ""
+    return ("\n⚡ <b>Hinweis zu Strom-Daten:</b> '" + esc(ort) + "' gehört zum Versorgungsgebiet von "
+            "<b>" + esc(betreiber) + "</b> — nicht zu Netz OÖ. Stromausfall-Überwachung ist für diesen Ort "
+            "nicht möglich, da der Betreiber keine abfragbaren Störungsdaten veröffentlicht. "
+            "Einsatz-, Unwetter- und alle übrigen Wachen funktionieren normal.")
+
 def _load_strom_state():
     try:
         with open(STROM_STATE_FILE, "r") as f:
@@ -2232,11 +2262,15 @@ def strom_fetch_bezirke():
         return None
 
 def strom_text_fuer_orte(orte):
-    """/strom-Befehl: aktueller Störungsstatus für die Bezirke der User-Orte."""
+    """/strom-Befehl: aktueller Störungsstatus für die Bezirke der User-Orte.
+    Orte außerhalb des Netz-OÖ-Gebiets (eigene Netzbetreiber) bekommen einen klaren
+    Hinweis statt 'keine Daten' — die übrigen Orte des Users liefern normal Daten."""
     alle = strom_fetch_bezirke()
     if not alle:
         return None
-    bez = sorted({ORT_BEZIRK.get(o.lower().strip(), o.title()) for o in orte})
+    bez = sorted({ORT_BEZIRK.get(o.lower().strip(), o.title()) for o in orte
+                  if o.lower().strip() not in STROM_FREMD_GEBIETE})
+    fremd = [o for o in orte if o.lower().strip() in STROM_FREMD_GEBIETE]
     zeilen = []
     for b in bez:
         hit = None
@@ -2246,10 +2280,13 @@ def strom_text_fuer_orte(orte):
                 break
         if hit:
             name, d = hit
-            icon = "\u2705" if d["betroffen"] == 0 else "\u26a1"
+            icon = "✅" if d["betroffen"] == 0 else "⚡"
             zeilen.append(f"{icon} <b>{esc(name)}</b> — {d['betroffen']} Kunden ohne Versorgung")
         else:
             zeilen.append(f"❓ {esc(b)} — keine Daten")
+    for o in fremd:
+        betreiber = STROM_FREMD_GEBIETE[o.lower().strip()]
+        zeilen.append(f"🚫 {esc(o.title())} — Strom-Daten nicht verfügbar (Versorgungsgebiet {esc(betreiber)}, nicht Netz OÖ)")
     return "\n".join(zeilen)
 
 def check_strom_for_users(users):
@@ -2264,6 +2301,9 @@ def check_strom_for_users(users):
         if not ud.get("registered") or ud.get("silent"):
             continue
         for ort in ud.get("orte", []):
+            # Orte außerhalb des Netz-OÖ-Versorgungsgebiets: keine Strom-Wache möglich
+            if ort.lower().strip() in STROM_FREMD_GEBIETE:
+                continue
             b = ORT_BEZIRK.get(ort.lower().strip())
             if b:
                 bez_map.setdefault(b, set()).add(cid)
@@ -3711,7 +3751,7 @@ def handle_bot_commands():
                             unw_text = "\n⛈️ <b>Aktive Unwetter-Warnungen in " + esc(ort) + ":</b>\n" + "\n".join(zeilen)
                 except Exception:
                     pass
-                send_to(chat_id, f"\u2705 '{esc(ort)}' wird jetzt <b>dauerhaft</b> beobachtet.{zusatz}\nEinsätze UND Unwetter-Warnungen werden gemeldet.\nOrte: {len(orte)}{ unw_text }")
+                send_to(chat_id, f"\u2705 '{esc(ort)}' wird jetzt <b>dauerhaft</b> beobachtet.{zusatz}\nEinsätze UND Unwetter-Warnungen werden gemeldet.\nOrte: {len(orte)}{ unw_text }" + _strom_fremd_hinweis(ort))
 
             elif text.startswith("/einsatz"):
                 parts = text.split(None, 1)
