@@ -149,7 +149,7 @@ rm -rf ~/feuerwehr-monitor ~/.config/fw_bot
 ## ⚠️ Rechtliches & Verlässlichkeit
 
 - Privates, **inoffizielles** Projekt — **keine offizielle Alarmierung!** Sirene, Funk, Pager und **Notruf 122** gehen immer vor.
-- Liest ausschließlich öffentliche Quellen (OOELFV, einsaetze.at, GeoSphere, Hydro OÖ, Netz OÖ, Lawinenwarndienst OÖ, OpenStreetMap). Details im Bot: `/quellen`.
+- Liest ausschließlich öffentliche Quellen (OOELFV, einsaetze.at, GeoSphere, Hydro OÖ, Netz OÖ, Lawinenwarndienst OÖ, OpenStreetMap). Details im Bot: `/quellen` oder hier: [docs/QUELLEN.md](QUELLEN.md).
 - **Du bist Betreiber deiner Instanz** — der Umgang mit den Daten deiner Benutzer (DSGVO) liegt bei dir. Der Bot hilft dir: Offene Registrierung, `/datenschutz`-Info, Zwei-Stufen-Selbstlöschung, `/meinedaten`-Auskunft sind eingebaut.
 - **OÖ-Fokus:** Die Quellen decken Oberösterreich ab. Andere Regionen funktionieren nicht.
 

@@ -92,7 +92,7 @@ Fehlt die Datei, läuft der Bot mit Standard-Werten (Poll 5 s) — für Heimat-I
 
 <details>
 <summary><b>Ist der Bot offiziell?</b></summary>
-Nein — ein privates, inoffizielles Hobby-Projekt. Er liest öffentlich zugängliche Seiten aus (Liste im Bot via /quellen). Im Notfall gilt immer die offizielle Alarmierung.
+Nein — ein privates, inoffizielles Hobby-Projekt. Er liest öffentlich zugängliche Seiten aus (Liste im Bot via /quellen, detailliert: [docs/QUELLEN.md](docs/QUELLEN.md)). Im Notfall gilt immer die offizielle Alarmierung.
 </details>
 
 <details>
