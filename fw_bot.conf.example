@@ -1,0 +1,33 @@
+# ═══════════════════════════════════════════════════════
+#  Feuerwehr-Einsatz-Monitor — Konfiguration
+#  Pfad: ~/.config/fw_bot/fw_bot.conf
+#  Nach Änderungen: Service neu starten
+# ═══════════════════════════════════════════════════════
+
+[feuerwehr]
+# Name deiner Feuerwehr — erscheint in Begrüßung, Menü, /training etc.
+name = FF Musterdorf
+
+# einsaetze.at Organisations-ID deiner Wehr (für Historie + Übungen).
+# Fehlt sie: Der Bot sucht automatisch über den 880-Feuerwehren-Index.
+org_id = 000000
+
+[besitzer]
+# Deine Telegram-Chat-ID (wird auch in bot_token.env gesetzt).
+# WICHTIG: Diese ID ist der Admin (kann Benutzer verwalten, /rundruf …).
+admin_id = 123456789
+
+# Anzeigename des Admin-Kontos (wird bei Erstinstallation gesetzt).
+admin_username =
+
+[bot]
+# Wie oft die Datenquellen abgefragt werden (Sekunden).
+# 60 = empfohlen und fair gegenüber den Quellen. Minimum 5.
+poll_interval = 60
+
+# Maximale Anzahl Benutzer (Schutz vor Ressourcen-Spam).
+max_users = 2000
+
+# InkyPi-E-Ink-Display (optional): URL der Display-API eintragen, leer = aus.
+# Beispiel: http://127.0.0.1:80/display_plugin_instance
+inkypi_api =
