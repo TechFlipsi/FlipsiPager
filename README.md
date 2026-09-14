@@ -1,10 +1,10 @@
-# 🇦🇹 FF Feuerwehr-Einsatz-Monitor
+# 🇦🇹 FlipsiPager — der Feuerwehr-Einsatz-Monitor für Oberösterreich
 
-[![Release](https://img.shields.io/github/v/release/TechFlipsi/feuerwehr-einsatz-monitor?logo=github&label=Aktuelle%20Version)](https://github.com/TechFlipsi/feuerwehr-einsatz-monitor/releases)
+[![Release](https://img.shields.io/github/v/release/TechFlipsi/FlipsiPager?logo=github&label=Aktuelle%20Version)](https://github.com/TechFlipsi/FlipsiPager/releases)
 [![Lizenz](https://img.shields.io/badge/Lizenz-MIT%20%2B%20Non--Commercial-blue.svg)](LICENSE)
 [![Plattform](https://img.shields.io/badge/Plattform-Raspberry%20Pi%20%7C%20Linux-c7a07c?logo=raspberrypi&logoColor=white)](docs/ANLEITUNG.md)
 [![Sprache](https://img.shields.io/badge/Sprache-Deutsch-green.svg)](docs/ANLEITUNG.md)
-[![Stars](https://img.shields.io/github/stars/TechFlipsi/feuerwehr-einsatz-monitor?style=social)](https://github.com/TechFlipsi/feuerwehr-einsatz-monitor/stargazers)
+[![Stars](https://img.shields.io/github/stars/TechFlipsi/FlipsiPager?style=social)](https://github.com/TechFlipsi/FlipsiPager/stargazers)
 
 Ein **selbst hostbarer** Telegram-Bot für Feuerwehr-Einsätze in **Oberösterreich** — auf deiner eigenen Hardware. Alarm bei Einsätzen an deinen beobachteten Orten, inklusive Unwetter-Warnungen, Pegel-Überwachung, Stromausfall-Wache, Lawinenlage, Sprachalarm und vielem mehr.
 
@@ -15,7 +15,7 @@ Keine Cloud, kein Abo, keine Registrierung außer Telegram selbst — **deine Da
 Bot bei [@BotFather](https://t.me/BotFather) anlegen, dann auf deinem Pi/Linux:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/TechFlipsi/feuerwehr-einsatz-monitor/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/TechFlipsi/FlipsiPager/main/install.sh | bash
 ```
 
 Der Einrichtungsassistent fragt alles ab (Feuerwehr-Name, Bot-Token, Admin-ID — vieles wird automatisch erkannt) und richtet einen systemd-Dienst ein. **Komplette Anleitung mit allen Details:** [docs/ANLEITUNG.md](docs/ANLEITUNG.md)

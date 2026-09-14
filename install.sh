@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 # ═══════════════════════════════════════════════════════════════════
-#  Feuerwehr-Einsatz-Monitor — Installations-Assistent (Linux/Pi)
-#  Einzeiler:  curl -fsSL https://raw.githubusercontent.com/TechFlipsi/feuerwehr-einsatz-monitor/main/install.sh | bash
+#  FlipsiPager — Installations-Assistent (Linux/Pi)
+#  Einzeiler:  curl -fsSL https://raw.githubusercontent.com/TechFlipsi/FlipsiPager/main/install.sh | bash
 #  Was das Skript tut: Python/System prüfen, Bot-Token + FF-Daten interaktiv
 #  abfragen, Config + systemd-Service anlegen, Bot starten und prüfen.
 # ═══════════════════════════════════════════════════════════════════
 set -euo pipefail
 
-REPO_RAW="https://raw.githubusercontent.com/TechFlipsi/feuerwehr-einsatz-monitor/main"
+REPO_RAW="https://raw.githubusercontent.com/TechFlipsi/FlipsiPager/main"
 FW_DIR="$HOME/.config/fw_bot"
 SERVICE_NAME="feuerwehr-monitor"
 SERVICE_FILE="/etc/systemd/system/${SERVICE_NAME}.service"
@@ -18,7 +18,7 @@ say()  { echo -e "${G}==>${N} $1"; }
 warn() { echo -e "${Y} !!${N} $1"; }
 die()  { echo -e "${R} ✗${N} $1" >&2; exit 1; }
 
-echo -e "${B}🔥 Feuerwehr-Einsatz-Monitor — Installation${N}"
+echo -e "${B}🔥 FlipsiPager — Installation${N}"
 echo "─────────────────────────────────────────────"
 echo "Dieses Skript installiert den Bot auf DIESEM Rechner und richtet"
 echo "einen systemd-Dienst ein. Es fragt vorher alles ab — nichts wird"
@@ -74,7 +74,7 @@ if [ -z "$FF_ORG" ]; then
     python3 - "$FF_NAME" > "$TMPF_ORG" 2>/dev/null <<PYEOF_ORG
 import json, sys, urllib.request, difflib
 name = sys.argv[1].lower().strip()
-idx_url = "https://raw.githubusercontent.com/TechFlipsi/feuerwehr-einsatz-monitor/main/data/einsaetze_at_index.json"
+idx_url = "https://raw.githubusercontent.com/TechFlipsi/FlipsiPager/main/data/einsaetze_at_index.json"
 idx = {}
 try:
     with urllib.request.urlopen(idx_url, timeout=15) as r:
@@ -98,7 +98,7 @@ echo
 echo -e "${B}── Schritt 2/4: Telegram-Bot anlegen ──${N}"
 echo "1. Öffne in Telegram den Chat mit @BotFather"
 echo "2. Sende:  /newbot"
-echo "3. Gib einen Namen (z. B. '$FF_NAME Einsatz-Monitor') und einen Benutzernamen"
+echo "3. Gib einen Namen (z. B. '$FF_NAME FlipsiPager') und einen Benutzernamen"
 echo "   (muss auf 'bot' enden, z. B. ${FF_NAME// /}_monitor_bot) ein."
 echo "4. BotFather antwortet mit einem TOKEN (sieht aus wie 123456:ABC-DEF...)."
 echo
@@ -204,7 +204,7 @@ if [ "$HAS_SYSTEMD" = "1" ]; then
     say "Richte systemd-Service ein …"
     $SUDO tee "$SERVICE_FILE" >/dev/null <<UNIT
 [Unit]
-Description=Feuerwehr-Einsatz-Monitor ($FF_NAME)
+Description=FlipsiPager ($FF_NAME)
 After=network-online.target
 Wants=network-online.target
 

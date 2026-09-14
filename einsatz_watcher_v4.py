@@ -754,7 +754,7 @@ ORT_KOORDINATEN = {
     "st. martin im innkreis": (48.3200, 13.5167),
 }
 
-UA_NOMINATIM = "FeuerwehrEinsatzMonitor/1.0 (github.com/TechFlipsi/feuerwehr-einsatz-monitor)"
+UA_NOMINATIM = "FlipsiPager/1.0 (github.com/TechFlipsi/FlipsiPager)"
 
 
 def _ort_koordinaten(ort):
@@ -2973,7 +2973,7 @@ def handle_bot_commands():
                         "\u2022 Schau sp\u00e4ter wieder vorbei \u2014 wenn Pl\u00e4tze frei werden (z. B. durch "
                         "L\u00f6schungen), kannst du dich erneut melden.\n"
                         "\u2022 Selbst hosten: Der Bot ist open source \u2014 du kannst deine eigene Instanz "
-                        "auf einem Raspberry Pi betreiben (Projekt: github.com/TechFlipsi/feuerwehr-einsatz-monitor)."))
+                        "auf einem Raspberry Pi betreiben (Projekt: github.com/TechFlipsi/FlipsiPager)."))
                     continue
                 first_name = msg.get("from", {}).get("first_name", "?")
                 logger.info(f"Neuer Bot-Kontakt: Chat-ID {chat_id} (First name: {first_name})")

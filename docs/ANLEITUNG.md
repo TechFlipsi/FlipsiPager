@@ -1,6 +1,6 @@
-# 📖 Anleitung: Feuerwehr-Einsatz-Monitor selbst hosten
+# 📖 Anleitung: FlipsiPager selbst hosten
 
-So betreibst du deinen **eigenen** Einsatz-Monitor-Bot für deine Feuerwehr — auf einem Raspberry Pi oder jedem Linux-Rechner. Dauer: **~10 Minuten**.
+So betreibst du deinen **eigenen** FlipsiPager-Bot für deine Feuerwehr — auf einem Raspberry Pi oder jedem Linux-Rechner. Dauer: **~10 Minuten**.
 
 > ⚠️ **Vorab ehrlich:** Das ist ein Projekt für Leute, die mit dem Terminal umgehen können. Es ist kein One-Click-Produkt. Wer das nicht möchte: Es gibt fertige Telegram-Bots mit ähnlichem Funktionsumfang — unser offizieller Bot ist via `t.me/feuerwehroff_bot` erreichbar.
 
@@ -27,7 +27,7 @@ So betreibst du deinen **eigenen** Einsatz-Monitor-Bot für deine Feuerwehr — 
 
 1. Öffne in Telegram den Chat mit **[@BotFather](https://t.me/BotFather)**
 2. Sende `/newbot`
-3. Name: z. B. `FF Musterdorf Einsatz-Monitor`
+3. Name: z. B. `FF Musterdorf FlipsiPager`
 4. Benutzername: muss auf `bot` enden, z. B. `ff_musterdorf_monitor_bot`
 5. BotFather antwortet mit einem **Token** — kopiere ihn dir (Format: `123456:ABC-DEF1234…`)
 
@@ -38,12 +38,12 @@ So betreibst du deinen **eigenen** Einsatz-Monitor-Bot für deine Feuerwehr — 
 Verbinde dich per SSH mit deinem Pi und führe aus:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/TechFlipsi/feuerwehr-einsatz-monitor/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/TechFlipsi/FlipsiPager/main/install.sh | bash
 ```
 
 > 🔍 Misstrauisch? (Gut so!) Dann erst ansehen und manuell starten:
 > ```bash
-> curl -fsSL https://raw.githubusercontent.com/TechFlipsi/feuerwehr-einsatz-monitor/main/install.sh -o install.sh
+> curl -fsSL https://raw.githubusercontent.com/TechFlipsi/FlipsiPager/main/install.sh -o install.sh
 > less install.sh
 > bash install.sh
 > ```
@@ -116,7 +116,7 @@ sudo systemctl disable --now feuerwehr-monitor  # Autostart aus
 
 ```bash
 cd ~/feuerwehr-monitor
-curl -fsSL https://raw.githubusercontent.com/TechFlipsi/feuerwehr-einsatz-monitor/main/einsatz_watcher_v4.py -o einsatz_watcher_v4.py
+curl -fsSL https://raw.githubusercontent.com/TechFlipsi/FlipsiPager/main/einsatz_watcher_v4.py -o einsatz_watcher_v4.py
 chmod 700 einsatz_watcher_v4.py
 sudo systemctl restart feuerwehr-monitor
 ```
