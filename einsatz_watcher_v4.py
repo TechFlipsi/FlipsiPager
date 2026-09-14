@@ -3933,9 +3933,45 @@ def handle_bot_commands():
                 orte = users["users"][cid_str].get("orte", [])
                 einsatz_watches = users["users"][cid_str].get("einsatz_watches", [])
                 ort_typen = users["users"][cid_str].get("ort_typen", {})
+                # Selbstheilung: temporäre Einsatz-Beobachtungen aufräumen, deren
+                # Einsatz längst beendet ist (z. B. wenn der Beendet-Zweig durch
+                # einen Neustart verpasst wurde). Live-Prüfung: aktuell-Liste ODER
+                # Tag-Liste ohne Endzeit = läuft noch; sonst entfernen + Bericht.
+                bereinigt = []
+                if einsatz_watches:
+                    try:
+                        html_akt = fetch_ooelfv(SOURCE_URL)
+                        liste_akt = parse_einsaetze_full(html_akt) or []
+                        aktive_orte = [e.get("ort", "").lower() for e in liste_akt]
+                        aktive_fw_namen = [fw["name"].lower() for e in liste_akt for fw in e.get("feuerwehren", [])]
+                        tag_e_mb = parse_einsaetze_full(get_tag_html()) or []
+                        laufende_neu = []
+                        for w in einsatz_watches:
+                            wl = w.lower()
+                            laeuft_no = any(wl in ort for ort in aktive_orte) or any(wl in n for n in aktive_fw_namen)
+                            if not laeuft_no:
+                                # Tag-Liste: Einsatz heute vorhanden OHNE Endzeit = läuft noch
+                                for te in tag_e_mb:
+                                    if any(wl in fw["name"].lower() for fw in te.get("feuerwehren", [])) and any(not fw.get("end") for fw in te.get("feuerwehren", [])):
+                                        laeuft_no = True
+                                        break
+                            if laeuft_no:
+                                laufende_neu.append(w)
+                            else:
+                                bereinigt.append(w)
+                        if bereinigt:
+                            einsatz_watches = laufende_neu
+                            users["users"][cid_str]["einsatz_watches"] = einsatz_watches
+                            save_users(users)
+                            logger.info(f"/meinebeobachtungen: {len(bereinigt)} beendete Einsatz-Watch(es) entfernt: {bereinigt} (User {cid_str})")
+                    except Exception as mb_err:
+                        logger.debug(f"/meinebeobachtungen Aufräumen Fehler: {mb_err}")
                 total = len(orte) + len(einsatz_watches)
                 if total == 0:
-                    send_to(chat_id, "\U0001f4cb Du hast aktuell keine Beobachtungen.\nMit /ort &lt;Ort&gt; einen Ort dauerhaft beobachten.\nMit /einsatz &lt;Ort&gt; nur den aktuellen Einsatz beobachten.")
+                    if bereinigt:
+                        send_to(chat_id, "🧹 Beendete Einsatz-Beobachtungen wurden aufgeräumt: " + esc(", ".join(bereinigt)) + ".\nDu hast aktuell keine Beobachtungen.\nMit /ort &lt;Ort&gt; einen Ort dauerhaft beobachten.\nMit /einsatz &lt;Ort&gt; nur den aktuellen Einsatz beobachten.")
+                    else:
+                        send_to(chat_id, "\U0001f4cb Du hast aktuell keine Beobachtungen.\nMit /ort &lt;Ort&gt; einen Ort dauerhaft beobachten.\nMit /einsatz &lt;Ort&gt; nur den aktuellen Einsatz beobachten.")
                 else:
                     msg = f"\U0001f4cb <b>Deine Beobachtungen ({total}):</b>\n\n"
                     if orte:
@@ -3949,6 +3985,8 @@ def handle_bot_commands():
                         msg += f"\n<b>Einsätze (temporär):</b>\n"
                         for i, w in enumerate(einsatz_watches):
                             msg += f"  {i+1}. {esc(w)} \u23f3\n"
+                    if bereinigt:
+                        msg += "\n🧹 Beendet und entfernt: " + esc(", ".join(bereinigt)) + " (Einsatz ist fertig)"
                     send_to(chat_id, msg)
 
             elif text == "/stumm" or text.startswith("/stumm "):
