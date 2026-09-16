@@ -627,7 +627,7 @@ def setup_telegram_commands():
         {"command": "anleitung", "description": "Wie funktioniert der Bot?"},
         {"command": "datenschutz", "description": "Welche Daten speichert der Bot?"},
         {"command": "lage", "description": "Aktuelle Einsätze in Oberösterreich"},
-        {"command": "warnungen", "description": "Aktive Unwetter-Warnungen (GeoSphere)"},
+        {"command": "wetterwarnung", "description": "Wetter-Warnungen abfragen (Regen/Wind/Gewitter/Schnee)"},
         {"command": "ort", "description": "Ort dauerhaft beobachten"},
         {"command": "unort", "description": "Dauerhafte Beobachtung entfernen"},
         {"command": "unortall", "description": "Alle dauerhaften Beobachtungen entfernen"},
@@ -856,6 +856,7 @@ def _haversine_km(lat1, lon1, lat2, lon2):
 
 # ═══ Unwetter-Warnungen (GeoSphere-Austria-WarnAPI, offizielle ZAMG-Nachfolger) ═══
 UNWETTER_CHECK_INTERVAL_MIN = 10      # nicht öfter prüfen (API schont)
+SILENT_AUTO_OFF_DAYS = 30             # stiller Modus läuft spätestens 30 Tage, dann automatisch aus (Selbstheilung)
 UNWETTER_ACTIVATE_STUFE = 2           # Warnstufe 2+ = 'starke Unwetter' alarmieren; 1 = nur Hinweis
 UNWETTER_STATE_FILE = os.path.join(os.path.dirname(USERS_FILE), "unwetter_state.json")
 
@@ -960,6 +961,25 @@ def check_unwetter_for_users(users):
                 if ud.get("silent"):
                     continue
                 send_to(cid, msg, reply_markup=kb_warnung)
+    # Entwarnung: verschwundene Warnungen (in seen, nicht mehr aktiv) an die Beobachter melden
+    for k in list(seen.keys()):
+        if k in aktive_keys:
+            continue
+        ort_key_e = k.split(":", 1)[0]
+        chat_ids_e = orte_map.get(ort_key_e, set())
+        seen.pop(k, None)
+        if not chat_ids_e:
+            continue
+        msg_e = ("\u2705 <b>Entwarnung: Unwetter-Warnung ist vorbei — %s</b>\n"
+                 "Die amtliche Warnung (GeoSphere Austria) wurde aufgehoben oder ist abgelaufen. "
+                 "Es sind keine Unwetter-Warnungen mehr aktiv." % esc(_ort_anzeige_cap(ort_key_e)))
+        kb_e = {"inline_keyboard": [[btn_karte_url(_ort_anzeige_cap(ort_key_e))]]}
+        for cid in chat_ids_e:
+            ud2 = users.get("users", {}).get(str(cid), {})
+            if ud2.get("silent"):
+                continue
+            send_to(cid, msg_e, reply_markup=kb_e)
+            logger.info(f"Unwetter-Entwarnung gesendet an {cid} ({ort_key_e})")
     seen = {k: v for k, v in seen.items() if k in aktive_keys}
     state["seen"] = seen
     _save_unwetter_state(state)
@@ -1547,6 +1567,15 @@ def send_week_digests():
         else:
             teile = ["%dx %s" % (n, t) for t, n in sorted(gef.items(), key=lambda x: -x[1])]
             text = ("\U0001f4ca <b>Deine Woche:</b> %d Einsätze in deinen Orten:\n" % gesamt) + "\n".join("• " + esc(t) for t in teile)
+        # Hinweis wenn Alarme stumm geschaltet sind (Erinnerung: Modus an → ggf. abschalten)
+        hinweise = []
+        if ud.get("silent"):
+            hinweise.append("\U0001f515 <b>Stiller Modus ist AKTIV</b> — du bekommst gerade KEINE Alarm-Nachrichten.\nAbschalten mit /stumm aus")
+        qh = ud.get("quiet_hours")
+        if qh:
+            hinweise.append("\U0001f319 Stillfenster %s ist gesetzt — Alarme im Fenster werden gesammelt.\nLöschen mit /stumm 0" % esc(str(qh)))
+        for hz in hinweise:
+            text = text + "\n\n\u26a0\ufe0f " + hz
         try:
             send_to(int(cid_str), text)
             ud["week_digest_last"] = jetzt.date().isoformat()
@@ -1687,7 +1716,7 @@ def anleitung_text():
         "und letzter Nachfrage — jederzeit abbrechbar mit /abbruch).\n\n"
         "\U0001f9ed <b>Alle Befehle</b> findest du mit /hilfe (oder tippe / im Chat).\n"
         "\U0001f512 Ruhezeiten: Mit /stumm bekommst du gar keine Alarme, Befehle funktionieren "
-        "weiterhin. Mit /stumm 22-07 richtest du ein Stillfenster ein — im Fenster werden Alarme "
+        "weiterhin (gilt automatisch nur 30 Tage, dann schaltet sich der stille Modus wieder ab). Mit /stumm 22-07 richtest du ein Stillfenster ein — im Fenster werden Alarme "
         "gesammelt und morgens als eine Sammel-Meldung zugestellt. Mit /wochen bekommst du "
         "sonntags um 20:00 einen Wochenrückblick deiner Orte. Mit /bezirk &lt;Kürzel&gt; siehst du "
         "die heutigen Einsätze eines ganzen Bezirks (z.B. /bezirk WL), mit /training die "
@@ -1971,6 +2000,48 @@ def loesch_nachfrage_stellen(cid_str, at, alter_days):
             f"{LOESCH_REASK_GRACE_HOURS}h nicht, wird automatisch abgebrochen + restauriert."))
     except Exception:
         pass
+
+def check_silent_auto_off():
+    """Selbstheilung: stiller Modus läuft spätestens SILENT_AUTO_OFF_DAYS Tage,
+    dann wird er automatisch abgeschaltet + User informiert. silent_until wird
+    bei jedem /stumm (an) neu gesetzt (Verlängerung). Feuert einmal pro Tag
+    maximal — geprüft über silent_check_last im State."""
+    try:
+        now = datetime.now()
+        geaendert = False
+        for cid_str, ud in list(users["users"].items()):
+            if not ud.get("silent"):
+                continue
+            su = ud.get("silent_until")
+            if not su:
+                # Legacy: still aktiv ohne Frist → Frist ab jetzt setzen (30 Tage Gnade)
+                ud["silent_until"] = (now + timedelta(days=SILENT_AUTO_OFF_DAYS)).isoformat()
+                save_users(users)
+                continue
+            try:
+                until = datetime.fromisoformat(su)
+            except (ValueError, TypeError):
+                # Kaputter Timestamp: Frist neu setzen statt Modus zu killen
+                ud["silent_until"] = (now + timedelta(days=SILENT_AUTO_OFF_DAYS)).isoformat()
+                save_users(users)
+                continue
+            if now >= until:
+                ud["silent"] = False
+                ud.pop("silent_until", None)
+                save_users(users)
+                send_to(int(cid_str), (
+                    "\u23f3 <b>Stiller Modus automatisch abgelaufen.</b>\n\n"
+                    "Er war %d Tage aktiv und wurde jetzt automatisch ausgeschaltet \u2014 "
+                    "du bekommst ab sofort wieder alle Alarm-Nachrichten. \U0001f692\n"
+                    "Wieder einschalten mit /stumm (gilt dann wieder %d Tage)."
+                    % (SILENT_AUTO_OFF_DAYS, SILENT_AUTO_OFF_DAYS)))
+                logger.info(f"Stiller Modus automatisch abgelaufen: {cid_str}")
+                geaendert = True
+        if geaendert:
+            save_users(users)
+    except Exception as e:
+        logger.debug(f"Silent-Auto-Off Fehler: {e}")
+
 
 def check_loesch_nachfragen():
     """Auto-Abbruch-Komponente: 2 Wochen nach Bestätigung wird die letzte Nachfrage
@@ -2722,6 +2793,36 @@ def check_lawinen_for_users(users):
     gesendet = 0
     stufe_de = {3: "erheblich", 4: "gro\u00df", 5: "sehr gro\u00df"}
     gemeldet = set(state.get("gemeldet", []))
+    # Entwarnung: Region die ALARM hatte (>=3) und jetzt unter Stufe 3 gefallen ist
+    aktiv_alarm = dict(state.get("aktiv_alarm", {}))
+    for rid, stufe_neu in region_stufen.items():
+        stufe_alt = aktiv_alarm.get(rid, 0)
+        if stufe_alt >= 3 and stufe_neu < 3:
+            z = LAWINEN_REGION_ZENTREN.get(rid)
+            if not z:
+                continue
+            for cid, ud in users.get("users", {}).items():
+                if not ud.get("registered"):
+                    continue
+                trifft = False
+                for ort in ud.get("orte", []):
+                    coords = _ort_koordinaten(ort.lower().strip())
+                    if coords and _lawinen_region_fuer_ort(coords[0], coords[1]) == rid:
+                        trifft = True
+                        break
+                if trifft:
+                    send_to(int(cid), (
+                        "\u2705 <b>Entwarnung: Lawinengefahr gesunken — %s</b>\n"
+                        "Die Gefahrenstufe ist jetzt unter Stufe 3 (aktuell: %d). "
+                        "Die Lawinenwarnung ist aufgehoben. Details: https://lawinen.report/"
+                        % (esc(z["name"]), stufe_neu if stufe_neu else 1)))
+                    gesendet += 1
+            aktiv_alarm.pop(rid, None)
+            _save_lawinen_state(state)
+    for rid, stufe in region_stufen.items():
+        if stufe >= 3:
+            aktiv_alarm[rid] = stufe
+    state["aktiv_alarm"] = aktiv_alarm
     for cid, ud in users.get("users", {}).items():
         if not ud.get("registered"):
             continue
@@ -2982,7 +3083,7 @@ def help_text(user_data, is_admin):
         f"\U0001f680 /start — Bot aktivieren / Begrüßung\n"
         f"/anleitung — Wie funktioniert der Bot? (Daten, Regeln, Limits)\n"
         f"/lage — Alle laufenden Einsätze in Oberösterreich (mit 📍-Karte &amp; ⏱️-Beobachten-Buttons je Einsatz)\n"
-        f"/warnungen [Ort] — Aktive Unwetter-Warnungen (GeoSphere Austria); ohne Ort: für deine beobachteten Orte\n"
+        f"/wetterwarnung [Ort] — Aktive amtliche Wetter-Warnungen (GeoSphere Austria): Regen, Wind, Gewitter, Schnee, Hitze — klar vom Feuerwehr-Einsatz getrennt; ohne Ort: für deine beobachteten Orte\n"
         f"/offenhausen — Letzte Einsätze der Heimat-Feuerwehr ({FF_NAME})\n"
         f"/heute — Einsätze von heute für deine Orte\n"
         f"/statistik — Statistik der letzten 12 Monate (+ Diagramm als Bild)\n"
@@ -3006,6 +3107,7 @@ def help_text(user_data, is_admin):
         f"\n\U0001f514 <b>Ruhe &amp; Kontrolle</b>\n"
         f"/stumm — Stiller Modus an/aus (keine Alarme, Befehle bleiben nutzbar)\n"
         f"/stumm 22-07 — Stillfenster: zwischen 22 und 7 Uhr werden Alarme gesammelt und morgens als Sammel-Meldung zugestellt (/stumm 0 löscht das Fenster, /stumm ohne Argument zeigt den Status)\n"
+        f"/stumm — stiller Modus: schaltet alle Alarme ab, läuft automatisch nur 30 Tage und schaltet sich danach selbst wieder ab (Auto-Aus); /stumm aus = sofort aus\n"
         f"/wochen — Wochenrückblick ein-/ausschalten (sonntags 20:00 eine Zusammenfassung deiner Orte)\n"
         f"/qr_code — QR-Code mit dem Bot-Link zum Weiterschicken an Kameraden\n"
         f"\U0001f464 <b>Konto &amp; Datenschutz</b>\n"
@@ -3695,9 +3797,9 @@ def handle_bot_commands():
                     "keiner Verbindung zu ihnen. Alle Angaben ohne Gew\u00e4hr \u2014 im Notfall gilt immer "
                     "die offizielle Alarmierung (Sirene, Funk, Pager, Notruf 122)."))
 
-            elif text == "/warnungen" or text.startswith("/warnungen "):
+            elif text == "/wetterwarnung" or text.startswith("/wetterwarnung "):
                 # /warnungen [Ort|Bezirks-Kürzel] — aktive amtliche Unwetter-Warnungen (GeoSphere)
-                arg_w = text.split(None, 1)[1].strip()[:60] if text.startswith("/warnungen ") else ""
+                arg_w = text.split(None, 1)[1].strip()[:60] if text.startswith("/wetterwarnung ") else ""
                 ziel_orte = []
                 if arg_w:
                     if len(arg_w) <= 3 and arg_w.isalpha():
@@ -3713,7 +3815,7 @@ def handle_bot_commands():
                     ud_w = users["users"][cid_str]
                     ziel_orte = list(ud_w.get("orte", [])) + list(ud_w.get("einsatz_watches", []))
                 if not ziel_orte:
-                    send_to(chat_id, f"Usage: /warnungen &lt;Ort&gt;\nBeispiel: /warnungen {FF_NAME}\nOhne Ort: aktive Warnungen für deine beobachteten Orte.")
+                    send_to(chat_id, f"Usage: /wetterwarnung &lt;Ort&gt;\nBeispiel: /wetterwarnung {FF_NAME}\nOhne Ort: aktive Warnungen für deine beobachteten Orte.")
                     continue
                 gefundene = []
                 for oz in ziel_orte[:12]:
@@ -3726,6 +3828,18 @@ def handle_bot_commands():
                 such_w = arg_w.lower()
                 if such_w and not (len(such_w) <= 3 and such_w.isalpha()):
                     gefundene = [(oz, w) for (oz, w) in gefundene if such_w in oz.lower() or such_w in _norm_q(oz)]
+                # Nur aktuell gültige Warnungen zeigen (abgelaufene ausblenden)
+                now_dt = datetime.now()
+                gefundene_aktiv = []
+                for oz, w in gefundene:
+                    try:
+                        end_dt = datetime.strptime(w.get("end", ""), "%d.%m.%Y %H:%M")
+                        if end_dt < now_dt:
+                            continue
+                    except (ValueError, TypeError):
+                        pass
+                    gefundene_aktiv.append((oz, w))
+                gefundene = gefundene_aktiv
                 if not gefundene:
                     send_to(chat_id, "\u2705 Keine aktiven Unwetter-Warnungen" + (f" für {esc(arg_w)}" if arg_w else " für deine beobachteten Orte.") + " (GeoSphere Austria).")
                     continue
@@ -4043,10 +4157,17 @@ def handle_bot_commands():
                 arg = text.split(None, 1)
                 arg1 = arg[1].strip().lower() if len(arg) >= 2 else ""
                 if arg1 in ("off", "aus"):
+                    if not users["users"][cid_str].get("silent", False):
+                        send_to(chat_id, "\u2139\ufe0f Der stille Modus ist <b>bereits abgeschaltet</b>.\nDu bekommst bereits alle Alarm-Nachrichten.")
+                        continue
                     users["users"][cid_str]["silent"] = False
+                    users["users"][cid_str].pop("silent_until", None)
                     save_users(users)
                     send_to(chat_id, "\u2705 Stiller Modus <b>ausgeschaltet</b>. Du bekommst wieder Alarm-Nachrichten.")
                 elif arg1 == "0":
+                    if "quiet_hours" not in users["users"][cid_str]:
+                        send_to(chat_id, "\u2139\ufe0f Es ist <b>kein Stillfenster gesetzt</b> — nichts zu löschen.\nAlarme kommen bereits rund um die Uhr direkt an.")
+                        continue
                     users["users"][cid_str].pop("quiet_hours", None)
                     save_users(users)
                     send_to(chat_id, "\U0001f315 Stillfenster <b>gelöscht</b>. Alarme kommen wieder rund um die Uhr direkt an.")
@@ -4070,11 +4191,28 @@ def handle_bot_commands():
                     qh = users["users"][cid_str].get("quiet_hours")
                     q_txt = qh if qh else "keins"
                     s_txt = "AKTIV" if silent else "AUS"
-                    send_to(chat_id, "\U0001f515 Stiller Modus: <b>%s</b>\n\U0001f319 Stillfenster: <b>%s</b>\n\n/stumm = stiller Modus an\n/stumm aus = stiller Modus aus\n/stumm 22-07 = Stillfenster setzen\n/stumm 0 = Stillfenster löschen" % (s_txt, esc(q_txt)))
+                    rest_txt = ""
+                    if silent:
+                        su = users["users"][cid_str].get("silent_until")
+                        try:
+                            rest = (datetime.fromisoformat(su) - datetime.now())
+                            d = int(rest.total_seconds() // 86400)
+                            h = int((rest.total_seconds() % 86400) // 3600)
+                            rest_txt = "\n\u23f3 Automatisch aus in ca. %d Tagen %d Std." % (max(d, 0), max(h, 0))
+                        except (ValueError, TypeError):
+                            rest_txt = ""
+                    send_to(chat_id, "\U0001f515 Stiller Modus: <b>%s</b>%s\n\U0001f319 Stillfenster: <b>%s</b>\n\n/stumm = stiller Modus an\n/stumm aus = stiller Modus aus\n/stumm 22-07 = Stillfenster setzen\n/stumm 0 = Stillfenster löschen" % (s_txt, rest_txt, esc(q_txt)))
                 else:
+                    if users["users"][cid_str].get("silent", False):
+                        # Erneutes /stumm verlängert den Auto-Aus-Timer (30 Tage ab jetzt)
+                        users["users"][cid_str]["silent_until"] = (datetime.now() + timedelta(days=SILENT_AUTO_OFF_DAYS)).isoformat()
+                        save_users(users)
+                        send_to(chat_id, "\U0001f515 Der stille Modus ist <b>bereits eingeschaltet</b>.\n\u23f3 Auto-Abschaltung verl\u00e4ngert: gilt wieder <b>%d Tage</b> ab jetzt, dann automatisch aus.\nAusschalten mit: /stumm aus" % SILENT_AUTO_OFF_DAYS)
+                        continue
                     users["users"][cid_str]["silent"] = True
+                    users["users"][cid_str]["silent_until"] = (datetime.now() + timedelta(days=SILENT_AUTO_OFF_DAYS)).isoformat()
                     save_users(users)
-                    send_to(chat_id, "\U0001f515 Stiller Modus <b>eingeschaltet</b>. Du bekommst keine Alarm-Nachrichten mehr.\nAlle Befehle bleiben nutzbar.\nAusschalten mit: /stumm aus")
+                    send_to(chat_id, "\U0001f515 Stiller Modus <b>eingeschaltet</b>. Du bekommst keine Alarm-Nachrichten mehr.\nAlle Befehle bleiben nutzbar.\nAusschalten mit: /stumm aus\n\n\u23f3 Der stille Modus gilt f\u00fcr <b>%d Tage</b> \u2014 danach wird er automatisch wieder ausgeschaltet und du bekommst wieder alle Alarme." % SILENT_AUTO_OFF_DAYS)
 
             elif text == "/heute":
                 orte = users["users"][cid_str].get("orte", [])
@@ -4871,6 +5009,8 @@ def main():
                 logger.debug(f"UNREG-Purge Fehler: {purge_err}")
             # Zwei-Stufen-Löschung: letzte Nachfrage nach 2 Wochen + Auto-Abbruch bei Nichtreaktion
             check_loesch_nachfragen()
+            # Still-Modus Selbstheilung: spätestens 30 Tage, dann automatisch aus + Info
+            check_silent_auto_off()
             # Onboarding: neue Nutzer bekommen Anleitung + Datenschutz einmalig pro ID
             send_onboarding_if_needed()
             # Unwetter-Bewachung: beobachtete Orte auf aktive Warnungen prüfen (interner 10-Min-Takt)
