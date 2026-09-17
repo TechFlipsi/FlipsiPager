@@ -10,6 +10,8 @@ Ein **selbst hostbarer** Telegram-Bot für Feuerwehr-Einsätze in **Oberösterre
 
 Keine Cloud, kein Abo, keine Registrierung außer Telegram selbst — **deine Daten bleiben auf deinem Gerät.**
 
+🌐 **[Projektseite](https://techflipsi.kirchweger.de/projekte/flipsipager.html)**
+
 ## ⚡ Schnellstart (10 Minuten)
 
 Bot bei [@BotFather](https://t.me/BotFather) anlegen, dann auf deinem Pi/Linux:
