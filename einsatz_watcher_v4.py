@@ -1736,10 +1736,11 @@ def anleitung_text():
         "Steht ein Pegel auf Alarmstufe, kriegst du sofort eine Meldung — und eine Entwarnung, wenn "
         "sich alles beruhigt. Details anytime mit /pegel.\n\n"
         "⚡ <b>Strom-Wache inklusive:</b> Die Störungskarte des Netzbetreibers (Netz OÖ) wird automatisch "
-        "für den Bezirk deiner Orte überwacht — bei Ausfällen kriegst du sofort Bescheid, mit Entwarnung. "
-        "Abfragen mit /strom.\n\n"
+        "für deine Orte selbst überwacht (Gemeinde/Umkreis, nicht der ganze Bezirk) — bei Ausfällen "
+        "kriegst du sofort Bescheid, mit Entwarnung. Abfragen mit /strom.\n\n"
         "🔥 <b>Waldbrand-Wache inklusive:</b> Aus offiziellen GeoSphere-Wetterdaten wird alle 3 Stunden eine "
-        "Gefährdungseinschätzung an deinen Orten berechnet (Trockenheit, Wind, Regen). Abfragen mit /waldbrand.\n\n"
+        "Gefährdungseinschätzung an deinen Orten berechnet (Trockenheit, Wind, Regen — inkl. echten "
+        "Regen-Messwerten der letzten 24 h). Abfragen mit /waldbrand.\n\n"
         "❄️ <b>Lawinen-Wache:</b> /lawine zeigt die Lage für ganz OÖ, /lawine <Ort> (z. B. /lawine Gosau) "
         "sagt dir die Gefahr am Berg für einen bestimmten Ort. Automatisch kriegst du eine Lawinenwarnung "
         "NUR, wenn einer deiner beobachteten Orte in einer Lawinen-Zone liegt und dort Stufe 3 (erheblich) "
@@ -2358,19 +2359,18 @@ def send_stimme_wenn_aktiv(chat_id, user_data, e, fw_count, namen):
 # ═══ Stromausfall-Wache (Netz OÖ Versorgungsstatus, Gast-Login) ═══
 STROM_REST = "https://status.netzooe.at/i1-mobileproxy/service/rest"
 STROM_SITE = "{A1572015-4D5B-11E3-8058-005056A23A2E}"
-STROM_QID_BEZIRKE = "{F7A2442A-A542-11E3-A0F1-005056A23A2E}"
+# Gemeinde-Query der Störungskarte: listet NUR Gemeinden mit Ausfällen
+# (Name, Kunden betroffen/gesamt, Farbe) — deutlich genauer als die alte
+# Bezirks-Query, bei der jeder Ausfall im GANZEN Bezirk alarmiert hat
+# (136 Kunden in Marchtrenk = Fehlalarm für Offenhausen, 16 km entfernt).
 STROM_QID_GEMEINDEN = "{5CB81F29-C776-11E6-98F7-005056A23A2E}"
 STROM_CHECK_INTERVAL_MIN = 15
 STROM_STATE_FILE = os.path.expanduser("~/.config/fw_bot/state/strom_state.json")
-# Ort → Netz-OÖ-Bezirk (für die Störungskarte):
-ORT_BEZIRK = {
-    "offenhausen": "Wels-Land", "lambach": "Wels-Land", "gaspoltshofen": "Grieskirchen",
-    "bad schallerbach": "Grieskirchen", "grieskirchen": "Grieskirchen", "gunskirchen": "Wels-Land",
-    "wels": "Wels", "thalheim bei wels": "Wels-Land", "buchkirchen": "Wels-Land",
-    "marchtrenk": "Wels-Land", "eferding": "Eferding", "vöcklabruck": "Vöcklabruck",
-    "attnang-puchheim": "Vöcklabruck", "schwanenstadt": "Vöcklabruck", "lengau": "Braunau am Inn",
-    "st. martin im innkreis": "Ried im Innkreis",
-}
+# Ein beobachteter Ort gilt nur als betroffen, wenn die ausfallgemeldete
+# Gemeinde so nah liegt (Koordinaten beider Seiten via Geokodierung; die
+# Gemeinde ist die Versorgungseinheit der Störungskarte). Generisch — auch
+# neu hinzugefügte Orte werden automatisch erkannt, kein Fixdrahten.
+STROM_ORT_UMKREIS_KM = 2.0
 
 # Orte, die NICHT im Netz-OÖ-Versorgungsgebiet liegen (eigene Netzbetreiber mit
 # eigenen Gebieten). Die Störungskarte deckt sie NICHT ab — der Bot weist beim
@@ -2411,9 +2411,9 @@ def _save_strom_state(state):
     except Exception as e:
         logger.debug(f"Strom-State save Fehler: {e}")
 
-def strom_fetch_bezirke():
-    """Netz OÖ Störungskarte: Gast-Login + Bezirke-Query.
-    Rückgabe: {bezirk_name: {"farbe": ..., "betroffen": int, "info": str}} oder None bei Fehler."""
+def strom_fetch_gemeinden():
+    """Netz OÖ Störungskarte: Gast-Login + Gemeinde-Query (nur Gemeinden MIT Ausfällen).
+    Rückgabe: {gemeinde_name_lower: {"name": ..., "betroffen": int, "gesamt": int}} oder None bei Fehler."""
     try:
         import http.cookiejar
         cj = http.cookiejar.CookieJar()
@@ -2427,7 +2427,7 @@ def strom_fetch_bezirke():
             data=b"{}", headers=hdr), timeout=20).read().decode())
         req = urllib.request.Request(STROM_REST + "/queryExecuteComplete",
             data=json.dumps({"sessionToken": d2["token"], "siteID": STROM_SITE,
-                             "queryID": STROM_QID_BEZIRKE, "queryParameter": None,
+                             "queryID": STROM_QID_GEMEINDEN, "queryParameter": None,
                              "loginname": "netzWebGast", "sideQuery": False}).encode(), headers=hdr)
         dd = json.loads(op.open(req, timeout=30).read().decode())
         cached = dd.get("queryResultCached", "")
@@ -2441,52 +2441,74 @@ def strom_fetch_bezirke():
             cell = row.get("cell", [])
             if len(cell) < 4:
                 continue
-            name = unescape(str(cell[0]))
-            betroffen_txt = unescape(str(cell[3]))
-            m = re.search(r"betroffen/gesamt\):\s*([0-9.]+)", betroffen_txt.replace("\u00a0", " "))
-            betroffen = int(m.group(1).replace(".", "")) if m else 0
-            erg[name] = {"farbe": cell[1], "betroffen": betroffen, "info": betroffen_txt}
+            # cell[3]: "Sattledt<br/>Kunden (betroffen/gesamt): 22 / 1676<br/>Stationen (betroffen/gesamt): 2 / 53"
+            info = unescape(str(cell[3])).replace("\u00a0", " ")
+            gname = info.split("<br/>", 1)[0].strip()
+            m = re.search(r"betroffen/gesamt\):\s*([0-9.]+)\s*/\s*([0-9.]+)", info)
+            if not gname or not m:
+                continue
+            betroffen = int(m.group(1).replace(".", ""))
+            gesamt = int(m.group(2).replace(".", ""))
+            erg[gname.lower()] = {"name": gname, "betroffen": betroffen, "gesamt": gesamt}
         return erg
     except Exception as e:
         logger.debug(f"Strom-Karte Fehler: {e}")
         return None
 
+def _strom_gemeinde_betrifft_ort(gemeinde, ort):
+    """True, wenn die ausfallgemeldete Gemeinde den beobachteten Ort wirklich betrifft:
+    Namensgleichheit ODER Koordinaten-Abstand <= STROM_ORT_UMKREIS_KM (beide via
+    _ort_koordinaten, also auch für neue Orte automatisch — kein Fixdrahten)."""
+    g_key = (gemeinde or "").lower().strip()
+    o_key = (ort or "").lower().strip()
+    if not g_key or not o_key:
+        return False
+    if g_key == o_key:
+        return True
+    if g_key in o_key or o_key in g_key:
+        return True
+    g_k = _ort_koordinaten(g_key)
+    o_k = _ort_koordinaten(o_key)
+    if not g_k or not o_k:
+        return False
+    try:
+        return _haversine_km(g_k[0], g_k[1], o_k[0], o_k[1]) <= STROM_ORT_UMKREIS_KM
+    except Exception:
+        return False
+
 def strom_text_fuer_orte(orte):
-    """/strom-Befehl: aktueller Störungsstatus für die Bezirke der User-Orte.
-    Orte außerhalb des Netz-OÖ-Gebiets (eigene Netzbetreiber) bekommen einen klaren
-    Hinweis statt 'keine Daten' — die übrigen Orte des Users liefern normal Daten."""
-    alle = strom_fetch_bezirke()
+    """/strom-Befehl: aktuelle Störungen NUR bei den Orten des Users (Gemeinde = Ort
+    oder im Umkreis). Orte außerhalb des Netz-OÖ-Gebiets (eigene Netzbetreiber)
+    bekommen einen klaren Hinweis statt 'keine Daten'."""
+    alle = strom_fetch_gemeinden()
     if not alle:
         return None
-    bez = sorted({ORT_BEZIRK.get(o.lower().strip(), o.title()) for o in orte
-                  if o.lower().strip() not in STROM_FREMD_GEBIETE})
+    ueberwachte = [o for o in orte if o.lower().strip() not in STROM_FREMD_GEBIETE]
     fremd = [o for o in orte if o.lower().strip() in STROM_FREMD_GEBIETE]
     zeilen = []
-    for b in bez:
-        hit = None
-        for name, d in alle.items():
-            if name.lower() == b.lower():
-                hit = (name, d)
-                break
-        if hit:
-            name, d = hit
-            icon = "✅" if d["betroffen"] == 0 else "⚡"
-            zeilen.append(f"{icon} <b>{esc(name)}</b> — {d['betroffen']} Kunden ohne Versorgung")
+    for o in ueberwachte:
+        treff = [d for d in alle.values() if _strom_gemeinde_betrifft_ort(d["name"], o)]
+        if treff:
+            for d in treff:
+                zeilen.append(f"⚡ <b>{esc(o.title())}</b> — Ausfall in {esc(d['name'])}: "
+                              f"{d['betroffen']} von {d['gesamt']} Kunden ohne Versorgung")
         else:
-            zeilen.append(f"❓ {esc(b)} — keine Daten")
+            zeilen.append(f"✅ {esc(o.title())} — keine Ausfälle in unmittelbarer Nähe")
     for o in fremd:
         betreiber = STROM_FREMD_GEBIETE[o.lower().strip()]
         zeilen.append(f"🚫 {esc(o.title())} — Strom-Daten nicht verfügbar (Versorgungsgebiet {esc(betreiber)}, nicht Netz OÖ)")
     return "\n".join(zeilen)
 
 def check_strom_for_users(users):
-    """Strom-Wache: Meldung, wenn in einem Bezirk mit beobachtetem Ort >0 Kunden ohne Strom (Dedup 30 Min)."""
+    """Strom-Wache: meldet nur Ausfälle, die den beobachteten Ort WIRKLICH betreffen —
+    Gemeinde-Query der Störungskarte + Namens-/Umkreis-Abgleich (STROM_ORT_UMKREIS_KM).
+    Ein Ausfall 16 km weiter im selben Bezirk löst KEINE Meldung mehr aus. Dedup je Gemeinde."""
     now = time.time()
     state = _load_strom_state()
     if now - state.get("last_check", 0) < STROM_CHECK_INTERVAL_MIN * 60:
         return
     state["last_check"] = now
-    bez_map = {}
+    ort_map = {}
     for cid, ud in users.get("users", {}).items():
         if not ud.get("registered") or ud.get("silent"):
             continue
@@ -2494,40 +2516,45 @@ def check_strom_for_users(users):
             # Orte außerhalb des Netz-OÖ-Versorgungsgebiets: keine Strom-Wache möglich
             if ort.lower().strip() in STROM_FREMD_GEBIETE:
                 continue
-            b = ORT_BEZIRK.get(ort.lower().strip())
-            if b:
-                bez_map.setdefault(b, set()).add(cid)
-    if not bez_map:
+            ort_map.setdefault(ort.lower().strip(), set()).add(cid)
+    if not ort_map:
         _save_strom_state(state)
         return
-    alle = strom_fetch_bezirke()
+    alle = strom_fetch_gemeinden()
     if not alle:
         _save_strom_state(state)
         return
     seen = dict(state.get("störungen", {}))
-    aktive = set()
     gesendet = 0
-    for b, chat_ids in bez_map.items():
-        hit = next((d for name, d in alle.items() if name.lower() == b.lower()), None)
-        if hit and hit["betroffen"] > 0:
-            aktive.add(b)
-            if seen.get(b) != hit["betroffen"]:
-                seen[b] = hit["betroffen"]
-                msg = ("\u26a1 <b>Stromausfall-Wache — " + esc(b) + "</b>\n"
-                       "Ohne Versorgung: <b>" + str(hit["betroffen"]) + " Kunden</b>\n"
+    for ort, chat_ids in ort_map.items():
+        ort_anz = _ort_anzeige_cap(ort)
+        treff = [d for d in alle.values() if _strom_gemeinde_betrifft_ort(d["name"], ort)]
+        for hit in treff:
+            gname = hit["name"]
+            key = f"{ort}|{gname}"
+            if seen.get(key) != hit["betroffen"]:
+                seen[key] = hit["betroffen"]
+                msg = ("\u26a1 <b>Stromausfall — " + esc(ort_anz) + "</b>\n"
+                       "Betroffen: <b>" + esc(gname) + "</b> (" + str(hit["betroffen"]) + " von "
+                       + str(hit["gesamt"]) + " Kunden ohne Versorgung)\n"
                        "Quelle: Netz O\u00d6 St\u00f6rungskarte\n"
                        "\u2139\ufe0f Bei Aufz\u00fcgen, BMA oder Arbeitsstellen beachten.")
                 for cid in chat_ids:
                     send_to(cid, msg)
                     gesendet += 1
-        # Entwarnung:
-        elif b in seen and hit is not None and hit["betroffen"] == 0:
-            del seen[b]
-            msg = ("\u2705 <b>Versorgung wieder her — " + esc(b) + "</b>\n"
-                   "Alle Kunden wieder am Netz.")
-            for cid in chat_ids:
-                send_to(cid, msg)
-                gesendet += 1
+        # Entwarnung: Gemeinde betraf den Ort vorher und hat jetzt keine Ausfälle mehr
+        for key in list(seen.keys()):
+            if not key.startswith(ort + "|"):
+                continue
+            gname = key.split("|", 1)[1]
+            noch_da = next((d for d in treff if d["name"] == gname), None)
+            if noch_da is None:
+                del seen[key]
+                msg = ("\u2705 <b>Versorgung wieder her — " + esc(ort_anz) + "</b>\n"
+                       "In " + esc(gname) + " sind wieder alle Kunden am Netz.")
+                for cid in chat_ids:
+                    send_to(cid, msg)
+                    gesendet += 1
     state["störungen"] = seen
     _save_strom_state(state)
     if gesendet:
@@ -2537,6 +2564,58 @@ def check_strom_for_users(users):
 WALDBRAND_CHECK_INTERVAL_H = 3
 WALDBRAND_STATE_FILE = os.path.expanduser("~/.config/fw_bot/state/waldbrand_state.json")
 GEOSPHERE_TSS = "https://dataset.api.hub.geosphere.at/v1/timeseries/forecast/nwp-v2-1h-1km"
+# Echte Messwerte (TAWES) in die Bewertung einbeziehen: der 1-km-Forecast kann
+# Regen vollständig unterschlagen (17.09.2026 Offenhausen: 0,5 mm vorhergesagt,
+# real 25 mm gefallen → Waldbrand-Fehlalarm trotz Landregen).
+TAWES_BASE = "https://dataset.api.hub.geosphere.at/v1/station/historical/tawes-v1-10min"
+TAWES_CURRENT_META = "https://dataset.api.hub.geosphere.at/v1/station/current/tawes-v1-10min/metadata"
+WALDBRAND_RAIN_24H_STOP_MM = 2.0   # ab dieser REAL gemessenen Menge: Entwarnung/keine Stufe
+TAWES_STATIONEN_CACHE = {"ts": 0.0, "liste": None}
+
+def _tawes_stationen():
+    """TAWES-Stationenliste (id/name/lat/lon), 24 h gecacht. [] bei Fehler."""
+    now = time.time()
+    if TAWES_STATIONEN_CACHE["liste"] is not None and now - TAWES_STATIONEN_CACHE["ts"] < 86400:
+        return TAWES_STATIONEN_CACHE["liste"]
+    try:
+        u = TAWES_CURRENT_META
+        req = urllib.request.Request(u, headers={"User-Agent": UA_NOMINATIM})
+        meta = json.loads(urllib.request.urlopen(req, timeout=25).read().decode())
+        liste = [{"id": s.get("id"), "name": s.get("name"), "lat": s.get("lat"), "lon": s.get("lon")}
+                 for s in meta.get("stations", []) if s.get("lat") is not None and s.get("lon") is not None]
+        if liste:
+            TAWES_STATIONEN_CACHE["liste"] = liste
+            TAWES_STATIONEN_CACHE["ts"] = now
+        return liste
+    except Exception as e:
+        logger.debug(f"TAWES-Stationen Fehler: {e}")
+        return []
+
+def _tawes_regen_24h(lat, lon):
+    """REAL gefallener Niederschlag (mm) der letzten 24 h an der nächsten TAWES-Station
+    (Haversine, Stationsliste gecacht). 0.0 bei Datenproblemen — die Abschätzung
+    fällt dann auf die Forecast-Logik zurück (kein Härten ohne echte Messung)."""
+    try:
+        from math import radians as _r, sin as _s, cos as _c, asin as _a, sqrt as _q
+        def dist(s):
+            la, lo = s["lat"], s["lon"]
+            x = _s((_r(la) - _r(lat)) / 2) ** 2 + _c(_r(lat)) * _c(_r(la)) * _s((_r(lo) - _r(lon)) / 2) ** 2
+            return 6371.0 * 2 * _a(min(1.0, x ** 0.5))
+        stationen = _tawes_stationen()
+        if not stationen:
+            return 0.0
+        naechste = min(stationen, key=dist)
+        start = (datetime.utcnow() - timedelta(hours=24)).strftime("%Y-%m-%dT%H:%M")
+        end = datetime.utcnow().strftime("%Y-%m-%dT%H:%M")
+        u = (f"{TAWES_BASE}?parameters=RR&station_ids={naechste['id']}&start={start}&end={end}")
+        req = urllib.request.Request(u, headers={"User-Agent": UA_NOMINATIM})
+        d = json.loads(urllib.request.urlopen(req, timeout=25).read().decode())
+        rr = (d.get("features", [{}])[0].get("properties", {}).get("parameters", {})
+              .get("RR", {}).get("data")) or []
+        return round(sum(v for v in rr if v is not None), 1)
+    except Exception as e:
+        logger.debug(f"TAWES-Regen-24h Fehler: {e}")
+        return 0.0
 
 def _load_waldbrand_state():
     try:
@@ -2574,14 +2653,18 @@ def waldbrand_fetch_punkt(lat, lon):
         if not t or not rh:
             return None
         return {"t_max": max(t), "rh_min": min(rh), "boeen_max": max(fg) if fg else 0.0,
-                "rain_12h": round(sum(rn), 1) if rn else 0.0}
+                "rain_12h": round(sum(rn), 1) if rn else 0.0,
+                "rain_24h": _tawes_regen_24h(lat, lon)}
     except Exception as e:
         logger.debug(f"Waldbrand-Abfrage Fehler: {e}")
         return None
 
 def waldbrand_stufe(d):
     """Eigene, dokumentierte Gefährdungsabschätzung aus GeoSphere-Wetter (kein offizieller FWI!):
-    0 unauffällig / 1 erhöht / 2 kritisch."""
+    0 unauffällig / 1 erhöht / 2 kritisch.
+    rain_24h = REAL gemessener Niederschlag (TAWES-Stationen) der letzten 24 h. Bei >= 2 mm
+    wird die Stufe HART auf 0 gedrückt — der 1-km-Forecast allein hat am 17.09.2026 in
+    Offenhausen 0,5 mm vorhergesagt, während real 25 mm fielen (Fehlalarm)."""
     score = 0
     if d["rh_min"] < 40: score += 1
     if d["rh_min"] < 30: score += 1
@@ -2589,6 +2672,9 @@ def waldbrand_stufe(d):
     if d["rain_12h"] < 1.0: score += 2
     elif d["rain_12h"] < 3.0: score += 1
     if d["boeen_max"] >= 12.5: score += 1
+    # Real gemessener Regen schlägt die Vorhersage: nasser Boden = kein Waldbrandrisiko
+    if d.get("rain_24h", 0) >= 2.0:
+        return 0
     if score >= 4: return 2
     if score >= 2: return 1
     return 0
@@ -2625,13 +2711,18 @@ def check_waldbrand_for_users(users):
     for okey, (stufe, w) in ort_stufen.items():
         alt = stufen.get(okey, 0)
         stufen[okey] = stufe
+        # Bei REAL gemessenem Regen (>= STOP-Schwelle) keine NEUE Waldbrand-Warnung:
+        # nasser Boden schlägt die Vorhersage — verhindert den Fehlalarm vom 17.09.2026.
+        if w.get("rain_24h", 0) >= WALDBRAND_RAIN_24H_STOP_MM and stufe >= 1:
+            continue
         if stufe != alt and stufe >= 1:
             ort_anz = _ort_anzeige_cap(okey)
             icon = "\U0001f9ea" if stufe == 1 else "\U0001f525"
             txt = (f"{icon} <b>Waldbrandgefahr {STUFE_TXT[stufe]} — {esc(ort_anz)}</b>\n"
-                   f"Trockenheit + Wind erh\u00f6hen das Risiko (eigene Wetter-Absch\u00e4tzung, GeoSphere-Daten).\n"
-                   f"12-h-Regen: {w['rain_12h']} mm \u2022 Luftfeuchte min: {w['rh_min']} % \u2022 B\u00f6en: {round(w['boeen_max']*3.6)} km/h\n"
-                   f"Achtung bei B\u00f6schungsbr\u00e4nden, Stoppelbr\u00e4nden, hei\u00dfen Tagen.")
+                   f"Trockenheit + Wind erhöhen das Risiko (eigene Wetter-Abschätzung, GeoSphere-Daten).\n"
+                   f"12-h-Regen: {w['rain_12h']} mm • Regen 24 h (Messung): {w.get('rain_24h', 0)} mm • "
+                   f"Luftfeuchte min: {w['rh_min']} % • Böen: {round(w['boeen_max']*3.6)} km/h\n"
+                   f"Achtung bei Böschungsbränden, Stoppelbränden, heißen Tagen.")
             for cid in chat_map[okey]:
                 send_to(cid, txt)
                 gesendet += 1
@@ -2659,7 +2750,8 @@ def waldbrand_text_fuer_orte(orte):
         st = waldbrand_stufe(w)
         icon = "\u2705" if st == 0 else ("\U0001f9ea" if st == 1 else "\U0001f525")
         zeilen.append(f"{icon} <b>{esc(ort.title())}</b>: Gefahr {STUFE_TXT[st]} "
-                      f"(Feuchte {w['rh_min']} %, T max {round(w['t_max'])} \u00b0C, B\u00f6en {round(w['boeen_max']*3.6)} km/h, 12-h-Regen {w['rain_12h']} mm)")
+                      f"(Feuchte {w['rh_min']} %, T max {round(w['t_max'])} \u00b0C, B\u00f6en {round(w['boeen_max']*3.6)} km/h, "
+                      f"12-h-Regen {w['rain_12h']} mm, 24-h-Regen {w.get('rain_24h', 0)} mm)")
     return "\n".join(zeilen)
 
 # ═══ Bergwacht/Lawinen-Abfrage (/lawine — Lawinenwarndienst OÖ AT-04) ═══
@@ -3116,7 +3208,7 @@ def help_text(user_data, is_admin):
         f"/vergessen — Kompletten Zugang löschen (Bestätigung + 2 Wochen Bedenkzeit + letzte Nachfrage)\n"
         f"/testalarm — Probealarm: prüft ob Alarme bei dir ankommen\n"
         f"/pegel — Wasserstände der Pegel im Umkreis deiner Orte (Hochwasser-Wache)\n"
-        f"/strom — Stromausfälle in den Bezirken deiner Orte (Netz OÖ)\n"
+        f"/strom — Stromausfälle bei deinen Orten selbst (Netz OÖ, Umkreis-Prüfung)\n"
         f"/waldbrand — Waldbrand-Gefährdung an deinen Orten (Wetter-Abschätzung)\n"
         f"/lawine — Lawinenlagebericht für ganz OÖ (Totes Gebirge, Dachstein, Sengsengebirge …)\n"
         f"/lawine <Ort> — Gefahr am Berg für EINEN Ort (z. B. /lawine Gosau)\n"
@@ -3471,7 +3563,7 @@ def handle_bot_commands():
                 try:
                     orte_u = user_data.get("orte", [])
                     if not orte_u:
-                        send_to(chat_id, "\u2139\ufe0f Beobachte zuerst Orte mit /ort — Strom-St\u00f6rungen werden f\u00fcr deine Bezirke gesucht.")
+                        send_to(chat_id, "\u2139\ufe0f Beobachte zuerst Orte mit /ort — Strom-St\u00f6rungen werden f\u00fcr deine Orte selbst gepr\u00fcft.")
                         continue
                     send_to(chat_id, "\u26a1 St\u00f6rungsstatus wird geladen\u2026")
                     rep = strom_text_fuer_orte(orte_u)
@@ -5023,7 +5115,7 @@ def main():
                 check_pegel_for_users(load_users())
             except Exception as pegel_err:
                 logger.debug(f"Pegel-Check Fehler: {pegel_err}")
-            # Strom-Wache: Netz-OÖ-Störungen in den Bezirken beobachteter Orte (15-Minuten-Takt)
+            # Strom-Wache: Netz-OÖ-Störungen, die beobachtete Orte selbst betreffen (15-Minuten-Takt)
             try:
                 check_strom_for_users(load_users())
             except Exception as strom_err:
