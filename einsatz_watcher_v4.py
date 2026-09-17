@@ -2659,12 +2659,21 @@ def waldbrand_fetch_punkt(lat, lon):
         logger.debug(f"Waldbrand-Abfrage Fehler: {e}")
         return None
 
+# Saison-Sperre: Die Waldbrand-Wache ruht von November bis März (Sir-Order 17.09.2026:
+# "wehe er meldet im Winter Waldbrandgefahr"). Ein trockener Frosttag (kein Regen,
+# Föhn-Böen, trockene Luft) könnte sonst im Jänner 'erhöht' rechnen, obwohl nasser/
+# gefrorener Boden kein Brandrisiko hat. Aktiv: April bis Oktober.
+WALDBRAND_SAISON_MONATE = (4, 5, 6, 7, 8, 9, 10)
+
 def waldbrand_stufe(d):
     """Eigene, dokumentierte Gefährdungsabschätzung aus GeoSphere-Wetter (kein offizieller FWI!):
     0 unauffällig / 1 erhöht / 2 kritisch.
     rain_24h = REAL gemessener Niederschlag (TAWES-Stationen) der letzten 24 h. Bei >= 2 mm
     wird die Stufe HART auf 0 gedrückt — der 1-km-Forecast allein hat am 17.09.2026 in
     Offenhausen 0,5 mm vorhergesagt, während real 25 mm fielen (Fehlalarm)."""
+    # Saison-Sperre: November–März ruht die Wache komplett (Winter = kein Waldbrandrisiko)
+    if datetime.now().month not in WALDBRAND_SAISON_MONATE:
+        return 0
     score = 0
     if d["rh_min"] < 40: score += 1
     if d["rh_min"] < 30: score += 1
@@ -2708,6 +2717,11 @@ def check_waldbrand_for_users(users):
     gesendet = 0
     stufen = dict(state.get("stufen") or {})
     state["stufen"] = stufen
+    # Saison-Sperre auch im Versand: Nov–März keine Waldbrand-Meldungen (weder Warnung
+    # noch Entwarnung), State bleibt unangetastet — ab April läuft alles normal weiter.
+    if datetime.now().month not in WALDBRAND_SAISON_MONATE:
+        _save_waldbrand_state(state)
+        return
     for okey, (stufe, w) in ort_stufen.items():
         alt = stufen.get(okey, 0)
         stufen[okey] = stufe
@@ -2736,6 +2750,10 @@ def check_waldbrand_for_users(users):
 
 def waldbrand_text_fuer_orte(orte):
     """/waldbrand-Befehl: aktuelle Stufen am Ort (sofortige Abfrage)."""
+    # Saison-Sperre: Nov–März zeigt der Befehl den Ruhemodus statt einer Einschätzung
+    if datetime.now().month not in WALDBRAND_SAISON_MONATE:
+        return ("❄️ <b>Waldbrand-Wache ruht im Winterhalbjahr</b> (November bis März).\n"
+                "Ab April ist die Einschätzung wieder verfügbar.")
     zeilen = []
     for ort in orte:
         okey = ort.lower().strip()
