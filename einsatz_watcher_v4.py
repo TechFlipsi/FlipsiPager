@@ -2570,6 +2570,15 @@ GEOSPHERE_TSS = "https://dataset.api.hub.geosphere.at/v1/timeseries/forecast/nwp
 TAWES_BASE = "https://dataset.api.hub.geosphere.at/v1/station/historical/tawes-v1-10min"
 TAWES_CURRENT_META = "https://dataset.api.hub.geosphere.at/v1/station/current/tawes-v1-10min/metadata"
 WALDBRAND_RAIN_24H_STOP_MM = 2.0   # ab dieser REAL gemessenen Menge: Entwarnung/keine Stufe
+# FFMC-Schwellen (kanadischer Fine Fuel Moisture Code, CFFDRS-Referenzklassen):
+# < 80 LOW, 80–87 MODERATE (leicht entzündlich, kontrollierbar — KEINE Bot-Warnung),
+# 88–90,5 HIGH (intensive Brände möglich), > 90,5 VERY HIGH (Spotfires).
+# Kalibrierung 18.09.2026 (2. Fehlalarm, FFMC 87,3 mit 64 % Feuchte): Bot-Stufe 1
+# erst ab 88 (kanadisches HIGH) — bei 84 hätte jeder herbstliche Trockentag alarmiert.
+WALDBRAND_FFMC_STUFE_1 = 88.0   # ab hier Stufe 1 (erhöht)
+WALDBRAND_FFMC_STUFE_2 = 90.5   # ab hier potenziell Stufe 2 (mit T/Feuchte-Bedingungen)
+WALDBRAND_STUFE_2_T_MIN = 23.0  # ...nur wenn auch die Temperatur hoch ist
+WALDBRAND_STUFE_2_RH_MAX = 40.0 # ...und die Luft trocken ist
 TAWES_STATIONEN_CACHE = {"ts": 0.0, "liste": None}
 
 def _tawes_stationen():
@@ -2591,10 +2600,12 @@ def _tawes_stationen():
         logger.debug(f"TAWES-Stationen Fehler: {e}")
         return []
 
-def _tawes_regen_24h(lat, lon):
-    """REAL gefallener Niederschlag (mm) der letzten 24 h an der nächsten TAWES-Station
-    (Haversine, Stationsliste gecacht). 0.0 bei Datenproblemen — die Abschätzung
-    fällt dann auf die Forecast-Logik zurück (kein Härten ohne echte Messung)."""
+def _tawes_messwerte(lat, lon, stunden=24):
+    """Echte Messwerte der letzten N Stunden von der nächsten TAWES-Station:
+    t_max (°C), rh_min (%), wind_max (km/h, Mittelwind FF), regen (mm, RR),
+    plus Liste der 24-h-Teilfenster für die FFMC-Tagesiteration.
+    None bei Datenproblemen — dann ruht die Abschätzung still (KEIN Forecast-Fallback,
+    Fehlalarm-Fix 18.09.2026: nur echte Messungen entscheiden)."""
     try:
         from math import radians as _r, sin as _s, cos as _c, asin as _a, sqrt as _q
         def dist(s):
@@ -2603,19 +2614,78 @@ def _tawes_regen_24h(lat, lon):
             return 6371.0 * 2 * _a(min(1.0, x ** 0.5))
         stationen = _tawes_stationen()
         if not stationen:
-            return 0.0
+            return None
         naechste = min(stationen, key=dist)
-        start = (datetime.utcnow() - timedelta(hours=24)).strftime("%Y-%m-%dT%H:%M")
+        start = (datetime.utcnow() - timedelta(hours=stunden)).strftime("%Y-%m-%dT%H:%M")
         end = datetime.utcnow().strftime("%Y-%m-%dT%H:%M")
-        u = (f"{TAWES_BASE}?parameters=RR&station_ids={naechste['id']}&start={start}&end={end}")
+        u = (f"{TAWES_BASE}?parameters=TL,RF,FF,RR&station_ids={naechste['id']}&start={start}&end={end}")
         req = urllib.request.Request(u, headers={"User-Agent": UA_NOMINATIM})
         d = json.loads(urllib.request.urlopen(req, timeout=25).read().decode())
-        rr = (d.get("features", [{}])[0].get("properties", {}).get("parameters", {})
-              .get("RR", {}).get("data")) or []
-        return round(sum(v for v in rr if v is not None), 1)
+        pp = (d.get("features", [{}])[0].get("properties", {}).get("parameters", {}))
+        def seq(k):
+            return [v for v in (pp.get(k, {}).get("data") or []) if v is not None]
+        tl, rf, ff, rr = seq("TL"), seq("RF"), seq("FF"), seq("RR")
+        if not tl or not rf:
+            return None
+        # 24-h-Teilfenster für FFMC-Tagesiteration (ältestes zuerst):
+        fenster = []
+        for tag_start in range(stunden - 24, -1, -24):
+            a, b = tag_start, tag_start + 24
+            tl_t = [v for v in tl[a:b] if v is not None]
+            rf_t = [v for v in rf[a:b] if v is not None]
+            ff_t = [v for v in ff[a:b] if v is not None]
+            rr_t = [v for v in rr[a:b] if v is not None]
+            if tl_t and rf_t:
+                fenster.append({"t_max": max(tl_t), "rh_min": min(rf_t),
+                                "wind_max": round(max(ff_t) * 3.6, 1) if ff_t else 0.0,
+                                "regen": round(sum(rr_t), 1)})
+        if not fenster:
+            return None
+        letztes = fenster[-1]
+        return {"t_max": letztes["t_max"], "rh_min": letztes["rh_min"],
+                "wind_max": letztes["wind_max"], "regen_24h": letztes["regen"],
+                "fenster": fenster, "station": naechste["name"]}
     except Exception as e:
-        logger.debug(f"TAWES-Regen-24h Fehler: {e}")
-        return 0.0
+        logger.debug(f"TAWES-Messwerte Fehler: {e}")
+        return None
+
+def _ffmc_berechnen(ffmc_yda, t, rh, wind_kmh, regen_24h):
+    """Fine Fuel Moisture Code — exakte CFFDRS-Formel (Van Wagner & Pickett 1985,
+    übersetzt aus der offiziellen cffdrs_py-Referenzimplementierung). FFMC kumuliert:
+    Tageswert des Vortags (ffmc_yda) + heutige Messwerte → heutiger FFMC.
+    Niedrig = Bodenstreu feucht = sicher; hoch = trocken = entzündlich (0–101)."""
+    try:
+        from math import exp as _e, sqrt as _q
+        if ffmc_yda is None or ffmc_yda < 0 or ffmc_yda > 101:
+            ffmc_yda = 85.0  # Systemstandard-Startwert
+        wmo = 147.277 * (101 - ffmc_yda) / (59.5 + ffmc_yda)
+        ra = (regen_24h - 0.5) if regen_24h > 0.5 else regen_24h
+        if regen_24h > 0.5:
+            if wmo > 150:
+                wmo = wmo + 0.0015 * (wmo - 150) ** 2 * _q(ra) \
+                      + 42.5 * ra * _e(-100 / (251 - wmo)) * (1 - _e(-6.93 / ra))
+            else:
+                wmo = wmo + 42.5 * ra * _e(-100 / (251 - wmo)) * (1 - _e(-6.93 / ra))
+        wmo = min(wmo, 250.0)
+        ed = 0.942 * (rh ** 0.679) + 11 * _e((rh - 100) / 10) \
+             + 0.18 * (21.1 - t) * (1 - 1 / _e(rh * 0.115))
+        ew = 0.618 * (rh ** 0.753) + 10 * _e((rh - 100) / 10) \
+             + 0.18 * (21.1 - t) * (1 - 1 / _e(rh * 0.115))
+        if wmo < ed and wmo < ew:
+            z = 0.424 * (1 - ((100 - rh) / 100) ** 1.7) + 0.0694 * _q(wind_kmh) * (1 - ((100 - rh) / 100) ** 8)
+            x = z * 0.581 * _e(0.0365 * t)
+            wm = ew - (ew - wmo) / (10 ** x)
+        elif wmo > ed:
+            z = 0.424 * (1 - (rh / 100) ** 1.7) + 0.0694 * _q(wind_kmh) * (1 - (rh / 100) ** 8)
+            x = z * 0.581 * _e(0.0365 * t)
+            wm = ed + (wmo - ed) / (10 ** x)
+        else:
+            wm = wmo
+        ffmc = (59.5 * (250 - wm)) / (147.277 + wm)
+        return round(max(0.0, min(101.0, ffmc)), 1)
+    except Exception as e:
+        logger.debug(f"FFMC-Berechnung Fehler: {e}")
+        return None
 
 def _load_waldbrand_state():
     try:
@@ -2632,32 +2702,24 @@ def _save_waldbrand_state(state):
     except Exception as e:
         logger.debug(f"Waldbrand-State save Fehler: {e}")
 
-def waldbrand_fetch_punkt(lat, lon):
-    """GeoSphere-NWP-Forecast (T/Feuchte/Böen/Regen) am Punkt. Rückgabe dict oder None."""
-    try:
-        import urllib.parse
-        params = "2t,2r,10fg,rain"
-        qs = (f"?parameters={params}&lat_lon={urllib.parse.quote(str(lat))},{urllib.parse.quote(str(lon))}"
-              f"&start=" + datetime.utcnow().strftime("%Y-%m-%dT%H:00Z"))
-        u = GEOSPHERE_TSS + qs + "&end=" + (datetime.utcnow() + timedelta(hours=12)).strftime("%Y-%m-%dT%H:00Z")
-        r = urllib.request.urlopen(urllib.request.Request(u, headers={"User-Agent": UA_NOMINATIM}), timeout=25)
-        d = json.loads(r.read().decode())
-        feats = d.get("features", [])
-        if not feats:
-            return None
-        pp = feats[0].get("properties", {}).get("parameters", {})
-        def vals(k):
-            arr = [v for v in (pp.get(k, {}).get("data") or []) if v is not None]
-            return arr if (arr := arr) else []
-        t = vals("2t"); rh = vals("2r"); fg = vals("10fg"); rn = vals("rain")
-        if not t or not rh:
-            return None
-        return {"t_max": max(t), "rh_min": min(rh), "boeen_max": max(fg) if fg else 0.0,
-                "rain_12h": round(sum(rn), 1) if rn else 0.0,
-                "rain_24h": _tawes_regen_24h(lat, lon)}
-    except Exception as e:
-        logger.debug(f"Waldbrand-Abfrage Fehler: {e}")
+def waldbrand_fetch_punkt(lat, lon, ffmc_prev=None):
+    """Echte TAWES-Messwerte + FFMC am Punkt. Rückgabe dict oder None.
+    KEIN Forecast mehr im Waldbrand-Pfad (Fehlalarm-Fix 18.09.2026).
+    FFMC-Kalibrierung: Liegt kein gespeicherter Vortagswert vor (ffmc_prev = None
+    bzw. außerhalb 0–101), kalibriert die Funktion über die letzten 72 h
+    (3 Tagesfenster rückwärts iteriert) — der FFMC braucht ~3 Tage zur Konvergenz;
+    ein Startwert 85 ohne Historie würde herbstliche Tage zu 'erhöht' verzerren."""
+    m = _tawes_messwerte(lat, lon, stunden=72 if not (0 <= (ffmc_prev or -1) <= 101) else 24)
+    if not m:
         return None
+    ffmc = ffmc_prev
+    for fenster in m["fenster"]:
+        ffmc = _ffmc_berechnen(ffmc, fenster["t_max"], fenster["rh_min"],
+                               fenster["wind_max"], fenster["regen"])
+    if ffmc is None:
+        return None
+    m["ffmc"] = ffmc
+    return m
 
 # Saison-Sperre: Die Waldbrand-Wache ruht von November bis März (Sir-Order 17.09.2026:
 # "wehe er meldet im Winter Waldbrandgefahr"). Ein trockener Frosttag (kein Regen,
@@ -2666,32 +2728,44 @@ def waldbrand_fetch_punkt(lat, lon):
 WALDBRAND_SAISON_MONATE = (4, 5, 6, 7, 8, 9, 10)
 
 def waldbrand_stufe(d):
-    """Eigene, dokumentierte Gefährdungsabschätzung aus GeoSphere-Wetter (kein offizieller FWI!):
-    0 unauffällig / 1 erhöht / 2 kritisch.
-    rain_24h = REAL gemessener Niederschlag (TAWES-Stationen) der letzten 24 h. Bei >= 2 mm
-    wird die Stufe HART auf 0 gedrückt — der 1-km-Forecast allein hat am 17.09.2026 in
-    Offenhausen 0,5 mm vorhergesagt, während real 25 mm fielen (Fehlalarm)."""
-    # Saison-Sperre: November–März ruht die Wache komplett (Winter = kein Waldbrandrisiko)
+    """Gefährdungsabschätzung aus dem FFMC (kanadisches FWI-System, Standard auch in
+    Österreich: BOKU/GeoSphere nutzen den FFMC als Entstehungsgefahr-Indikator).
+    0 unauffällig / 1 erhöht / 2 hoch.
+    d = dict von waldbrand_fetch_punkt: t_max, rh_min, wind_max, regen_24h (alles
+    ECHTE Messwerte), ffmc (kumulativer Feuchtecode der Bodenstreu).
+    Gates:
+    1. Saison (Nov–März) → 0
+    2. Real gemessener Regen 24 h ≥ 2 mm → 0 HART (nasser Boden = kein Risiko)
+    3. FFMC < 84 → 0 (BOKU-Skala: sehr gering/gering/mäßig 1–3 = keine Warnung nötig)
+    4. FFMC ≥ 87 NUR MIT heißem Tag (≥ 23 °C) UND trockener Luft (rh_min < 40 %) → 2
+    5. FFMC ≥ 84 → 1
+    Physik dahinter (BOKU-Referenz): hohe Waldbrandgefahr entsteht erst durch
+    LANGZEIT-Trockenheit (FFMC kumuliert) PLUS Hitze plus geringe Luftfeuchte —
+    nicht durch einen einzelnen trockenen Tag nach Regen (Fehlalarm vom 18.09.)."""
     if datetime.now().month not in WALDBRAND_SAISON_MONATE:
         return 0
-    score = 0
-    if d["rh_min"] < 40: score += 1
-    if d["rh_min"] < 30: score += 1
-    if d["t_max"] >= 25: score += 1
-    if d["rain_12h"] < 1.0: score += 2
-    elif d["rain_12h"] < 3.0: score += 1
-    if d["boeen_max"] >= 12.5: score += 1
-    # Real gemessener Regen schlägt die Vorhersage: nasser Boden = kein Waldbrandrisiko
-    if d.get("rain_24h", 0) >= 2.0:
+    if d.get("regen_24h", 0) >= WALDBRAND_RAIN_24H_STOP_MM:
         return 0
-    if score >= 4: return 2
-    if score >= 2: return 1
+    ffmc = d.get("ffmc", 0)
+    if ffmc < WALDBRAND_FFMC_STUFE_1:
+        return 0
+    # BOKU-Physik: Die Streu trocknet nur bei Hitze (≥ 28 °C) oder sehr trockener
+    # Luft (< 30 %) messbar weiter — FFMC allein reicht nicht (2. Fehlalarm 18.09.).
+    hitze = d["t_max"] >= 28.0
+    duerreluft = d["rh_min"] < 30.0
+    if ffmc >= WALDBRAND_FFMC_STUFE_2 and d["t_max"] >= WALDBRAND_STUFE_2_T_MIN \
+            and d["rh_min"] < WALDBRAND_STUFE_2_RH_MAX:
+        return 2
+    if ffmc >= WALDBRAND_FFMC_STUFE_1 and (hitze or duerreluft):
+        return 1
+    # FFMC hoch, aber kühler Tag mit feuchter Luft → Streu trocknet kaum weiter:
     return 0
 
 STUFE_TXT = {0: "unauff\u00e4llig", 1: "erh\u00f6ht", 2: "hoch"}
 
 def check_waldbrand_for_users(users):
-    """Waldbrand-Wache: max. Stufe über alle Orte je User; Meldung bei Wechsel auf 1/2 (3-h-Takt)."""
+    """Waldbrand-Wache: max. Stufe über alle Orte je User; Meldung bei Wechsel auf 1/2 (3-h-Takt).
+    FFMC wird pro Ort im State kumuliert (Feuchtecode der Bodenstreu, mehrwöchiges Gedächtnis)."""
     now = time.time()
     state = _load_waldbrand_state()
     if now - state.get("last_check", 0) < WALDBRAND_CHECK_INTERVAL_H * 3600:
@@ -2699,6 +2773,7 @@ def check_waldbrand_for_users(users):
     state["last_check"] = now
     ort_stufen = {}
     chat_map = {}
+    ffmc_state = dict(state.get("ffmc") or {})
     for cid, ud in users.get("users", {}).items():
         if not ud.get("registered") or ud.get("silent"):
             continue
@@ -2710,10 +2785,12 @@ def check_waldbrand_for_users(users):
             coords = _ort_koordinaten(okey)
             if not coords:
                 continue
-            w = waldbrand_fetch_punkt(coords[0], coords[1])
+            w = waldbrand_fetch_punkt(coords[0], coords[1], ffmc_prev=ffmc_state.get(okey))
             if not w:
                 continue
+            ffmc_state[okey] = w["ffmc"]
             ort_stufen[okey] = (waldbrand_stufe(w), w)
+    state["ffmc"] = ffmc_state
     gesendet = 0
     stufen = dict(state.get("stufen") or {})
     state["stufen"] = stufen
@@ -2725,18 +2802,15 @@ def check_waldbrand_for_users(users):
     for okey, (stufe, w) in ort_stufen.items():
         alt = stufen.get(okey, 0)
         stufen[okey] = stufe
-        # Bei REAL gemessenem Regen (>= STOP-Schwelle) keine NEUE Waldbrand-Warnung:
-        # nasser Boden schlägt die Vorhersage — verhindert den Fehlalarm vom 17.09.2026.
-        if w.get("rain_24h", 0) >= WALDBRAND_RAIN_24H_STOP_MM and stufe >= 1:
-            continue
         if stufe != alt and stufe >= 1:
             ort_anz = _ort_anzeige_cap(okey)
             icon = "\U0001f9ea" if stufe == 1 else "\U0001f525"
             txt = (f"{icon} <b>Waldbrandgefahr {STUFE_TXT[stufe]} — {esc(ort_anz)}</b>\n"
-                   f"Trockenheit + Wind erhöhen das Risiko (eigene Wetter-Abschätzung, GeoSphere-Daten).\n"
-                   f"12-h-Regen: {w['rain_12h']} mm • Regen 24 h (Messung): {w.get('rain_24h', 0)} mm • "
-                   f"Luftfeuchte min: {w['rh_min']} % • Böen: {round(w['boeen_max']*3.6)} km/h\n"
-                   f"Achtung bei Böschungsbränden, Stoppelbränden, heißen Tagen.")
+                   f"Trockene Bodenstreu über mehrere Tage erhöht das Risiko (FFMC-Index, "
+                   f"TAWES-Messung Station {esc(str(w.get('station', '?')))}).\n"
+                   f"FFMC: {w['ffmc']} • T max 24 h: {round(w['t_max'])} °C • "
+                   f"Luftfeuchte min: {w['rh_min']} % • Wind: {round(w['wind_max'])} km/h • "
+                   f"Regen 24 h: {w.get('regen_24h', 0)} mm")
             for cid in chat_map[okey]:
                 send_to(cid, txt)
                 gesendet += 1
@@ -2754,6 +2828,8 @@ def waldbrand_text_fuer_orte(orte):
     if datetime.now().month not in WALDBRAND_SAISON_MONATE:
         return ("❄️ <b>Waldbrand-Wache ruht im Winterhalbjahr</b> (November bis März).\n"
                 "Ab April ist die Einschätzung wieder verfügbar.")
+    state = _load_waldbrand_state()
+    ffmc_state = dict(state.get("ffmc") or {})
     zeilen = []
     for ort in orte:
         okey = ort.lower().strip()
@@ -2761,15 +2837,16 @@ def waldbrand_text_fuer_orte(orte):
         if not coords:
             zeilen.append(f"❓ {esc(ort)} — unbekannter Ort")
             continue
-        w = waldbrand_fetch_punkt(coords[0], coords[1])
+        w = waldbrand_fetch_punkt(coords[0], coords[1], ffmc_prev=ffmc_state.get(okey))
         if not w:
-            zeilen.append(f"❓ {esc(ort)} — keine Daten")
+            zeilen.append(f"❓ {esc(ort)} — keine Messdaten")
             continue
         st = waldbrand_stufe(w)
         icon = "\u2705" if st == 0 else ("\U0001f9ea" if st == 1 else "\U0001f525")
         zeilen.append(f"{icon} <b>{esc(ort.title())}</b>: Gefahr {STUFE_TXT[st]} "
-                      f"(Feuchte {w['rh_min']} %, T max {round(w['t_max'])} \u00b0C, B\u00f6en {round(w['boeen_max']*3.6)} km/h, "
-                      f"12-h-Regen {w['rain_12h']} mm, 24-h-Regen {w.get('rain_24h', 0)} mm)")
+                      f"(FFMC {w['ffmc']}, T max {round(w['t_max'])} \u00b0C, Feuchte min {w['rh_min']} %, "
+                      f"Wind {round(w['wind_max'])} km/h, 24-h-Regen {w.get('regen_24h', 0)} mm — "
+                      f"Messung {esc(str(w.get('station', '?')))})")
     return "\n".join(zeilen)
 
 # ═══ Bergwacht/Lawinen-Abfrage (/lawine — Lawinenwarndienst OÖ AT-04) ═══
