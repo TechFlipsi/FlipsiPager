@@ -3106,10 +3106,10 @@ def sirenen_text():
         f"Nächster Termin: {wann}\n"
         f"(Erster Samstag im Oktober, bundesweit \u2014 {jahr_termin}: {termin.strftime('%d.%m.%Y')})\n\n"
         "<b>Signalablauf 12:00\u201312:45:</b>\n"
-        "\u2022 \u201eSirenenprobe\u201c \u2014 15 s Dauerton\n"
-        "\u2022 \u201eWarnung\u201c \u2014 auf- und abschwellender Heulton\n"
-        "\u2022 \u201eAlarm\u201c \u2014 1 Min auf- und abschwellender Heulton\n"
-        "\u2022 \u201eEntwarnung\u201c \u2014 1 Min Dauerton\n\n"
+        "\u2022 \u201eSirenenprobe\u201c \u2014 15 s Dauerton (Funktionsprobe, wie jeden Tag um 12:00)\n"
+        "\u2022 \u201eHerannahende Gefahr\u201c \u2014 3 Min gleichbleibender Dauerton\n"
+        "\u2022 \u201eGefahr!\u201c \u2014 1 Min auf- und abschwellender Heulton\n"
+        "\u2022 \u201eEntwarnung\u201c \u2014 1 Min gleichbleibender Dauerton\n\n"
         "\U0001f4f1 Begleitend kommt eine AT-Alert-Testmeldung aufs Handy.\n"
         "Mehr: https://www.zivilschutz.at/"
     )
@@ -3157,7 +3157,7 @@ def check_sirenen_for_users(users):
         txt = (
             "\U0001f9ef <b>Morgen ist Sirenenprobe!</b>\n"
             f"Zivilschutz-Probealarm am <b>{termin.strftime('%d.%m.%Y')}</b>, 12:00\u201312:45 Uhr \u2014 "
-            "in ganz \u00d6sterreich. Signale: \u201eSirenenprobe\u201c, \u201eWarnung\u201c, \u201eAlarm\u201c, \u201eEntwarnung\u201c "
+            "in ganz \u00d6sterreich. Signale: \u201eSirenenprobe\u201c, \u201eHerannahende Gefahr\u201c, \u201eGefahr!\u201c, \u201eEntwarnung\u201c "
             "+ AT-Alert-Testmeldung aufs Handy.\n"
             "Details: /sirene"
         )
@@ -3166,7 +3166,7 @@ def check_sirenen_for_users(users):
         txt = (
             "\U0001f9ef <b>Heute 12:00 Uhr ist Sirenenprobe!</b>\n"
             "Zivilschutz-Probealarm startet in 1 Stunde (12:00\u201312:45, ganz \u00d6sterreich). "
-            "Signale: \u201eSirenenprobe\u201c, \u201eWarnung\u201c, \u201eAlarm\u201c, \u201eEntwarnung\u201c "
+            "Signale: \u201eSirenenprobe\u201c, \u201eHerannahende Gefahr\u201c, \u201eGefahr!\u201c, \u201eEntwarnung\u201c "
             "+ AT-Alert-Testmeldung aufs Handy.\n"
             "Details: /sirene"
         )
