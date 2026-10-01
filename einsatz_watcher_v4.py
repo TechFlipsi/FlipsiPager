@@ -645,6 +645,7 @@ def setup_telegram_commands():
         {"command": "sonstiges", "description": "Sonstige Einsätze (Ort/Bezirk)"},
         {"command": "umkreis", "description": "Einsätze im Umkreis [km] meiner Orte"},
         {"command": "training", "description": "Übungen der Heimat-Feuerwehr"},
+        {"command": "dienst", "description": "Dienstbuch starten/abschließen (Duty-Log)"},
         {"command": "statistik", "description": "Einsatzstatistik der letzten 12 Monate"},
         {"command": "wochen", "description": "Wochenrückblick ein-/ausschalten"},
         {"command": "qr_code", "description": "QR-Code zum Weiterschicken des Bots"},
@@ -1108,6 +1109,107 @@ def save_state(path, state):
 def clear_state(path):
     if os.path.exists(path):
         os.remove(path)
+# ═══ Duty-Log (/dienst) — Dienstbuch: Zeitfenster → fertige Einsatzliste ═══
+# Für Übungsabend/Dienst: Startzeit merken, beim Ende alle Übung-/Einsatz-Ops der
+# Heimat-Feuerwehr im Zeitraum von einsaetze.at ziehen. Kein Personen-Datenbestand —
+# es bleibt nur Start/Ende + Titel bis zur Ausgabe (Archiv: 90 Tage, ohne Personen).
+DUTY_FILE = os.path.join(STATE_DIR, "dienstbuecher.json")
+
+def load_duty():
+    """Dienstbuch-State laden: offene Bänder je Chat + Archiv (90 Tage)."""
+    try:
+        with open(DUTY_FILE, "r") as f:
+            d = json.load(f)
+        if not isinstance(d, dict):
+            raise ValueError("kaputtes Format")
+        return {"aktiv": d.get("aktiv") or {}, "archiv": d.get("archiv") or []}
+    except Exception:
+        return {"aktiv": {}, "archiv": []}
+
+def save_duty(data):
+    try:
+        with open(DUTY_FILE, "w") as f:
+            json.dump(data, f, ensure_ascii=False, indent=1)
+    except Exception as ex:
+        logger.error(f"Duty-Log speichern fehlgeschlagen: {ex}")
+
+def fetch_duty_ops(org_id, start_dt, end_dt):
+    """Übungen/Einsätze von einsaetze.at im Zeitfenster. Quellen: SELBST-Seite
+    (Übungen+Einsätze gemischt, letzte ~100 Ops) + ungefilterte Seite (letzte ~20).
+    Dedup über op-id, Zeitfilter über startedAt (Fallback dateKey+time)."""
+    gef = {}
+    for selbst_seite in (True, False):
+        try:
+            suffix = "?kategorie=SELBST" if selbst_seite else ""
+            url = "https://www.einsaetze.at/organizations/%s%s" % (org_id, suffix)
+            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                html = resp.read().decode("utf-8", errors="replace")
+            ops = _rsc_operations(html)
+        except Exception:
+            continue
+        for o in ops:
+            oid = o.get("id")
+            if not oid:
+                continue
+            try:
+                dt_s = datetime.strptime(
+                    o.get("dateKey", "") + " " + (o.get("time") or "00:00"),
+                    "%Y-%m-%d %H:%M")
+            except (ValueError, TypeError):
+                continue
+            if o.get("startedAt"):
+                try:
+                    dt_s = datetime.fromtimestamp(int(o.get("startedAt")))
+                except (ValueError, TypeError, OSError):
+                    pass
+            if start_dt <= dt_s < end_dt:
+                gef[oid] = o
+    return sorted(gef.values(), key=lambda o: (o.get("dateKey", ""), o.get("time", "")))
+
+def duty_liste_text(ops, titel, start_dt, end_dt):
+    """Fertige Dienstbuch-Ausgabe: Einsatzliste + Summen (Kommandounterlage-tauglich)."""
+    dauer = (end_dt - start_dt)
+    tage = max(1, dauer.days + (1 if dauer.seconds else 0))
+    head = (
+        "\U0001f4d8 <b>Dienstbuch — %s</b>\n"
+        "Zeitraum: %s – %s (%d Tage)\n" % (
+            esc(titel),
+            start_dt.strftime("%d.%m.%Y %H:%M"),
+            end_dt.strftime("%d.%m.%Y %H:%M"),
+            tage)
+    )
+    if not ops:
+        return head + "\nKeine Übungen oder Einsätze der %s im Zeitraum gefunden." % esc(FF_NAME)
+    lines = []
+    stats = {}
+    for o in ops:
+        try:
+            d = datetime.strptime(o.get("dateKey", ""), "%Y-%m-%d").strftime("%d.%m.%Y")
+        except (ValueError, TypeError):
+            continue
+        zeit = o.get("time", "")
+        ende = o.get("endTime") or ""
+        span = f"{zeit}–{ende}" if ende else zeit
+        dauer_min = o.get("durationMinutes")
+        dauer_s = f" ({dauer_min} min)" if isinstance(dauer_min, int) and dauer_min else ""
+        tit = str(o.get("title", "") or "Einsatz")
+        orgs = o.get("organizations") or []
+        org_namen = ", ".join(str(x.get("name", "?")) for x in orgs) or str(o.get("place") or "")
+        kenn = ""
+        for x in orgs:
+            k = str(x.get("kennzahl") or "").strip()
+            if k:
+                kenn = " [#" + k + "]"
+                break
+        lines.append(f"\U0001f4c5 {d}, {span}{dauer_s} — {esc(tit)} ({esc(org_namen)}){esc(kenn)}")
+        stats[tit] = stats.get(tit, 0) + 1
+    fus = "\n\n<b>Summe:</b> %d Einsätze/Übungen" % len(ops)
+    if stats:
+        fus += "\n" + "\n".join(
+            "• %s: %d×" % (esc(k), v) for k, v in
+            sorted(stats.items(), key=lambda x: -x[1]))
+    return head + "\n" + "\n".join(lines) + fus
 
 # ═══ Watch Matching ═══
 def einsatz_matches_watch(einsatz, watch_term):
@@ -1600,6 +1702,7 @@ def datenschutz_text():
         "Adressen) und tempor\u00e4re Einsatz-Beobachtungen\n"
         "• <b>Zeitstempel</b> (seit wann du registriert bist)\n"
         "• <b>Alarm-Verlauf</b> (welche Alarme dich betroffen haben — für Rückblick/Wochenübersicht)\n"
+        "• <b>Bei /dienst:</b> nur Dienstbuch-Start/-Ende-Zeitpunkt + Titel (keine Personen-Daten)\n"
         "• <b>Bei Sprachalarm (/stimme):</b> nur das Ein/Aus-Flag in deinen Einstellungen — "
         "die Spracherzeugung läuft auf dem eigenen Server, es werden keine Sprachdaten übertragen\n"
         "• <b>Bei Fehlermeldungen</b> (/fehler): dein Text + deine Chat-ID + Benutzername "
@@ -3282,6 +3385,7 @@ def help_text(user_data, is_admin):
         f"/sonstiges &lt;Ort oder Kürzel&gt; — Sonstige Einsätze anzeigen (Bäume, Bergungen …)\n"
         f"/umkreis [km] — Laufende Einsätze im Umkreis deiner beobachteten Orte (Standard 15 km)\n"
         f"/training — Übungen der Heimat-Feuerwehr (12 Monate, von einsaetze.at)\n"
+        f"/dienst — Dienstbuch für Übungsabend/Dienst: start &lt;Titel&gt;, dann ende → fertige Einsatzliste\n"
         f"\n\U0001f4cd <b>Beobachten (meine Orte)</b>\n"
         f"/ort &lt;Ort&gt; — Ort <b>dauerhaft</b> beobachten — Alarm bei jedem Einsatz (z.B. /ort Lengau)\n"
         f"/ort &lt;Ort&gt; &lt;Typ&gt; — Ort nur für einen Einsatztyp beobachten: brand, technisch, personenrettung, unwetter oder sonstige (z.B. /ort Lengau brand)\n"
@@ -4057,6 +4161,164 @@ def handle_bot_commands():
                 except Exception:
                     send_to(chat_id, "\u26a0\ufe0f Fehler beim Abruf.")
 
+            elif text == "/dienst" or text.startswith("/dienst "):
+                parts = text.split(None, 1)
+                arg = parts[1].strip() if len(parts) > 1 else ""
+                duty = load_duty()
+                org_d = FF_ORG_ID or find_einsaetze_at_org_id(FF_NAME)
+
+                if arg == "" or arg == "status":
+                    off = duty["aktiv"].get(cid_str)
+                    if off:
+                        try:
+                            st_d = datetime.fromisoformat(off["start"])
+                            lauf = str(datetime.now() - st_d).split(".")[0]
+                            send_to(chat_id, (
+                                "\U0001f4d8 <b>Dienstbuch offen</b>\n"
+                                f"Titel: {esc(off.get('titel', 'Dienst'))}\n"
+                                f"Seit: {st_d.strftime('%d.%m.%Y %H:%M')} ({lauf})\n\n"
+                                "Beenden mit <b>/dienst ende</b> — du bekommst die Einsatzliste des Zeitraums."))
+                        except Exception:
+                            send_to(chat_id, "\u26a0\ufe0f Dienstbuch unlesbar — neu mit /dienst start <Titel>")
+                    else:
+                        send_to(chat_id, (
+                            "\U0001f4d8 <b>Duty-Log — Dienstbuch</b>\n"
+                            "Kein Dienstbuch offen.\n\n"
+                            "<b>/dienst start &lt;Titel&gt;</b> — beginnen (z. B. /dienst start \u00dcbung Technische Hilfe)\n"
+                            "<b>/dienst ende</b> — abschlie\u00dfen &amp; Einsatzliste bekommen\n"
+                            "<b>/dienst liste</b> — deine abgeschlossenen Dienstb\u00fccher\n"
+                            "<b>/dienst show &lt;Nr&gt;</b> — eines erneut ausgeben\n"
+                            "<b>/dienst abbrechen</b> — offenes Dienstbuch verwerfen"))
+
+                elif arg.startswith("start"):
+                    rest_s = arg.split(None, 1)
+                    tit = rest_s[1].strip()[:80] if len(rest_s) > 1 else "Dienst"
+                    if cid_str in duty["aktiv"]:
+                        alt = duty["aktiv"][cid_str]
+                        try:
+                            st_alt = datetime.fromisoformat(alt["start"]).strftime("%d.%m.%Y %H:%M")
+                        except Exception:
+                            st_alt = "?"
+                        send_to(chat_id, (
+                            "\u26a0\ufe0f Es ist schon ein Dienstbuch offen: '%s' (seit %s).\n"
+                            "Erst <b>/dienst ende</b> oder <b>/dienst abbrechen</b>."
+                            % (esc(alt.get("titel", "Dienst")), st_alt)))
+                        continue
+                    if not org_d:
+                        send_to(chat_id, "\u26a0\ufe0f Keine einsaetze.at-Org-ID f\u00fcr %s gefunden — Duty-Log braucht die Historie." % esc(FF_NAME))
+                        continue
+                    duty["aktiv"][cid_str] = {"titel": tit, "start": datetime.now().isoformat()}
+                    save_duty(duty)
+                    send_to(chat_id, (
+                        "\U0001f4d8 <b>Dienstbuch gestartet</b>\n"
+                        "Titel: %s\nSeit: %s\n\n"
+                        "Wenn der Dienst vorbei ist: <b>/dienst ende</b> — dann bekommst du alle \u00dcbungen "
+                        "und Eins\u00e4tze der %s im Zeitraum als fertige Liste."
+                        % (esc(tit), datetime.now().strftime("%d.%m.%Y %H:%M"), esc(FF_NAME))))
+
+                elif arg == "ende":
+                    off = duty["aktiv"].pop(cid_str, None)
+                    if not off:
+                        send_to(chat_id, "Kein Dienstbuch offen. Start: <b>/dienst start &lt;Titel&gt;</b>")
+                        continue
+                    if not org_d:
+                        save_duty(duty)
+                        send_to(chat_id, "\u26a0\ufe0f Keine Org-ID — Dienstbuch verworfen, Historie nicht abrufbar.")
+                        continue
+                    try:
+                        st = datetime.fromisoformat(off["start"])
+                    except Exception:
+                        save_duty(duty)
+                        send_to(chat_id, "\u26a0\ufe0f Startzeit unlesbar — Dienstbuch verworfen.")
+                        continue
+                    send_to(chat_id, "\U0001f4e5 Dienstbuch wird erstellt (einen Moment) \u2026")
+                    try:
+                        ops = fetch_duty_ops(org_d, st, datetime.now() + timedelta(minutes=1))
+                    except Exception as ex:
+                        duty["aktiv"][cid_str] = off
+                        save_duty(duty)
+                        logger.error(f"/dienst ende Abruf-Fehler: {ex}")
+                        send_to(chat_id, "\u26a0\ufe0f Abruf fehlgeschlagen — Dienstbuch bleibt offen. Bitte sp\u00e4ter /dienst ende erneut versuchen.")
+                        continue
+                    jetzt_out = datetime.now()
+                    text_out = duty_liste_text(ops, off.get("titel", "Dienst"), st, jetzt_out)
+                    arch_entry = {
+                        "chat_id": cid_str,
+                        "titel": off.get("titel", "Dienst"),
+                        "start": off["start"],
+                        "ende": jetzt_out.isoformat(),
+                        "anzahl": len(ops),
+                    }
+                    heute = datetime.now()
+                    gefiltert = []
+                    for a in duty.get("archiv", []) + [arch_entry]:
+                        try:
+                            ende_ref = datetime.fromisoformat(a.get("ende") or a.get("start"))
+                        except Exception:
+                            continue
+                        if (heute - ende_ref).days < 90:
+                            gefiltert.append(a)
+                    duty["archiv"] = gefiltert[-200:]
+                    save_duty(duty)
+                    send_to(chat_id, text_out)
+
+                elif arg == "liste":
+                    arch = [a for a in duty.get("archiv", []) if a.get("chat_id") == cid_str]
+                    if not arch:
+                        send_to(chat_id, "Keine abgeschlossenen Dienstb\u00fccher (letzte 90 Tage).\nStart mit <b>/dienst start &lt;Titel&gt;</b>.")
+                        continue
+                    msg_l = "\U0001f4da <b>Deine abgeschlossenen Dienstb\u00fccher</b>\n\n"
+                    for i, a in enumerate(arch[-10:][::-1], 1):
+                        try:
+                            s = datetime.fromisoformat(a["start"]).strftime("%d.%m.%Y")
+                        except Exception:
+                            s = "?"
+                        msg_l += "%d. %s — %s (%d Eintr\u00e4ge)\n" % (i, s, esc(str(a.get("titel", "?"))), int(a.get("anzahl") or 0))
+                    msg_l += "\n<b>/dienst show &lt;Nr&gt;</b> — Liste erneut ausgeben (frisch von einsaetze.at)."
+                    send_to(chat_id, msg_l)
+
+                elif arg.startswith("show"):
+                    nr_s = arg.split(None, 1)[1].strip() if len(arg.split(None, 1)) > 1 else ""
+                    arch = [a for a in duty.get("archiv", []) if a.get("chat_id") == cid_str]
+                    if not arch:
+                        send_to(chat_id, "Keine abgeschlossenen Dienstb\u00fccher.")
+                        continue
+                    try:
+                        nr = int(nr_s)
+                        if not (1 <= nr <= 10):
+                            raise ValueError
+                        a = arch[-nr]
+                    except (ValueError, IndexError):
+                        send_to(chat_id, "Usage: /dienst show 1\n(1 = j\u00fcngstes, 2 = zweitj\u00fcngstes \u2026 max 10)")
+                        continue
+                    if not org_d:
+                        send_to(chat_id, "\u26a0\ufe0f Keine Org-ID konfiguriert.")
+                        continue
+                    try:
+                        st_sh = datetime.fromisoformat(a["start"])
+                        en_sh = datetime.fromisoformat(a["ende"])
+                    except Exception:
+                        send_to(chat_id, "\u26a0\ufe0f Eintrag unlesbar.")
+                        continue
+                    send_to(chat_id, "\U0001f4e5 Liste wird frisch geladen \u2026")
+                    try:
+                        ops_sh = fetch_duty_ops(org_d, st_sh, en_sh)
+                    except Exception as ex:
+                        logger.error(f"/dienst show Fehler: {ex}")
+                        send_to(chat_id, "\u26a0\ufe0f Abruf fehlgeschlagen.")
+                        continue
+                    send_to(chat_id, duty_liste_text(ops_sh, str(a.get("titel", "Dienst")), st_sh, en_sh))
+
+                elif arg == "abbrechen":
+                    off = duty["aktiv"].pop(cid_str, None)
+                    save_duty(duty)
+                    if off:
+                        send_to(chat_id, "\U0001f5d1\ufe0f Dienstbuch '%s' verworfen." % esc(off.get("titel", "Dienst")))
+                    else:
+                        send_to(chat_id, "Kein Dienstbuch offen.")
+
+                else:
+                    send_to(chat_id, "Unbekannter /dienst-Befehl. /dienst ohne Argument zeigt die \u00dcbersicht.")
             elif text == "/offenhausen":
                 try:
                     # Org-ID fehlt in der Config → automatisch über den FF-Index suchen
