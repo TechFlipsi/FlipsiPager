@@ -2909,11 +2909,8 @@ def check_waldbrand_for_users(users):
             ort_anz = _ort_anzeige_cap(okey)
             icon = "\U0001f9ea" if stufe == 1 else "\U0001f525"
             txt = (f"{icon} <b>Waldbrandgefahr {STUFE_TXT[stufe]} — {esc(ort_anz)}</b>\n"
-                   f"Trockene Bodenstreu über mehrere Tage erhöht das Risiko (FFMC-Index, "
-                   f"TAWES-Messung Station {esc(str(w.get('station', '?')))}).\n"
-                   f"FFMC: {w['ffmc']} • T max 24 h: {round(w['t_max'])} °C • "
-                   f"Luftfeuchte min: {w['rh_min']} % • Wind: {round(w['wind_max'])} km/h • "
-                   f"Regen 24 h: {w.get('regen_24h', 0)} mm")
+                   f"FFMC {w['ffmc']} (trockene Bodenstreu, TAWES {esc(str(w.get('station', '?')))}). "
+                   f"Werte im Detail: /waldbrand")
             for cid in chat_map[okey]:
                 send_to(cid, txt)
                 gesendet += 1
