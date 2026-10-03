@@ -3285,6 +3285,105 @@ def check_sirenen_for_users(users):
         _save_sirenen_state(state)
         logger.info(f"{kopf} an {n} Nutzer gesendet (Termin {termin})")
 
+# ═══ Sirenen-Ticker (Probealarm live: aktuelles Signal + Restdauer) ═══
+# Idee Sir 02.10.2026: Während des Zivilschutz-Probealarms (erster Samstag im Oktober,
+# 12:00–12:45) schreibt der Bot bei jedem Signalwechsel eine kurze Meldung, WELCHER Ton
+# jetzt läuft und wie lange er geht — „wir wissen wann es losgeht und wie lange welcher
+# Ton geht". Reine Uhr-Mathematik, 0 Requests, kein Datenquelle-Risiko.
+SIRENEN_TICKER_FILE = os.path.join(STATE_DIR, "sirenen_ticker.json")
+
+# Offizieller Ablauf laut Zivilschutz (Ganz-OÖ/Bundesweit identisch):
+# 12:00 "Sirenenprobe" 15 s Dauerton (Funktionsprobe — ist auch werktags 12:00)
+# danach ca. 12:01 "Herannahende Gefahr" 3 Min Dauerton
+# danach ca. 12:05 "Gefahr!" 1 Min auf-/abschwellender Heulton
+# danach ca. 12:07(48) "Entwarnung" 1 Min Dauerton — Ende offiziell 12:45
+SIRENEN_TICKER_SIGNALS = [
+    # (start_offset_minuten, dauer_sekunden, name, beschreibung)
+    (0, 15, "Sirenenprobe", "15 s Dauerton — Funktionsprobe (so wie jeden Tag um 12:00)"),
+    (1, 180, "Herannahende Gefahr", "3 Min gleichbleibender Dauerton — das Ernstfall-Signal für approaching Gefahr"),
+    (5, 60, "Gefahr!", "1 Min auf- und abschwellender Heulton — Alarm für die Bevölkerung"),
+    (8, 60, "Entwarnung", "1 Min gleichbleibender Dauerton — alles wieder gut"),
+]
+
+def _sirenen_ticker_laeuft_jetzt(now=None):
+    """Liefert (signal_dict, startzeit_datetime, ende_signal_datetime) für das
+    aktuell laufende Probealarm-Signal — oder None (außerhalb 12:00–12:45 am Probetag)."""
+    now = now or datetime.now()
+    termin = _sirenen_termin(now.year)
+    if now.date() != termin:
+        return None
+    if now.hour != 12:
+        return None
+    m = now.minute
+    aktives = None
+    for off, dauer, name, beschr in SIRENEN_TICKER_SIGNALS:
+        sig_start = off
+        sig_ende = sig_start + max(1, round(dauer / 60.0))  # Minuten-Slots innerhalb der Stunde
+        if sig_start <= m < sig_ende:
+            aktives = {
+                "name": name, "beschreibung": beschr, "dauer_s": dauer,
+                "start_min": sig_start, "ende_min": sig_ende, "offset_min": off,
+            }
+            break
+    return aktives
+
+def check_sirenen_ticker(users):
+    """Live-Ticker während des Probealarms: Bei jedem Signalwechsel 1 Meldung an alle
+    registrierten User: welcher Ton jetzt läuft + wie lange + was als Nächstes kommt.
+    Dedup über State (gesendete Signal-Namen); nach 12:45 Auto-Cleanup."""
+    now = datetime.now()
+    termin = _sirenen_termin(now.year)
+    probe_tag = (now.date() == termin and now.hour == 12)
+    state = _load_sirenen_state()
+    ticker_state = state.setdefault("ticker", {})
+    # Nach dem Probe-Tag: Ticker-State aufräumen (einmalig, token-basiert)
+    if not probe_tag:
+        if ticker_state:
+            state.pop("ticker", None)
+            _save_sirenen_state(state)
+        return
+    sig = _sirenen_ticker_laeuft_jetzt(now)
+    if not sig:
+        return  # Lücke zwischen Signalen (12:00:15–12:01 etc.) — nichts senden
+    token = f"{termin.isoformat()}:{sig['name']}"
+    schon = set(ticker_state.get("gesendet", []))
+    if token in schon:
+        return
+    # Restdauer im aktuellen Minuten-Slot (Konservativ: Signal-Länge ist offiziell bekannt)
+    rest_s = sig["dauer_s"] - (now.minute * 60 + now.second - sig["start_min"] * 60)
+    rest_s = max(5, rest_s)
+    # Nächstes Signal für den Anker
+    naechster = None
+    for off, dauer, name, beschr in SIRENEN_TICKER_SIGNALS:
+        if off > sig["offset_min"]:
+            naechster = name
+            break
+    txt = (
+        f"\U0001f9ef <b>Sirenenprobe live — {esc(sig['name'])}</b>\n"
+        f"{esc(sig['beschreibung'])}.\n"
+        f"Signal-L\u00e4nge: {sig['dauer_s']} s (Rest ca. {rest_s} s)"
+    )
+    if naechster:
+        txt += f"\nDanach: \u201e{esc(naechster)}\u201c"
+    else:
+        txt += "\nDanach ist der Probealarm-Block zu Ende — \u21bb Entwarnung ist ausgestanden. \u2705"
+    n = 0
+    if BOT_TOKEN:
+        for cid, ud in users.get("users", {}).items():
+            if not ud.get("registered"):
+                continue
+            try:
+                send_to(cid, txt)
+                n += 1
+            except Exception as se:
+                logger.error(f"Sirenen-Ticker fehlgeschlagen {cid}: {se}")
+    if n:
+        # Token nur bei mindestens einem Erfolg markieren — sonst retry beim nächsten Zyklus
+        schon.add(token)
+        ticker_state["gesendet"] = list(schon)
+        state["ticker"] = ticker_state
+        _save_sirenen_state(state)
+        logger.info(f"Sirenen-Ticker: Signal '{sig['name']}' an {n} Nutzer")
 # ═══ /testalarm ═══
 def send_testalarm(chat_id):
     """Simulierter Probe-Alarm: prüft die Alarm-Zustellung, ohne echten Einsatz zu brauchen."""
@@ -5489,6 +5588,11 @@ def main():
                 check_sirenen_for_users(load_users())
             except Exception as sir_w_err:
                 logger.debug(f"Sirenen-Check Fehler: {sir_w_err}")
+            # Sirenen-Ticker: live welcher Ton läuft + Restdauer (nur am Probealarm-Tag 12:00–12:45)
+            try:
+                check_sirenen_ticker(load_users())
+            except Exception as sir_t_err:
+                logger.debug(f"Sirenen-Ticker Fehler: {sir_t_err}")
             # Wochenrückblick: sonntags 20:00 für User mit /wochen aktiv
             send_week_digests()
             html = fetch_ooelfv(SOURCE_URL)
