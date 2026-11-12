@@ -61,6 +61,11 @@ admin_id = $FW_ADMIN_ID
 poll_interval = ${FW_POLL_INTERVAL:-60}
 max_users = ${FW_MAX_USERS:-2000}
 inkypi_api =
+
+[update]
+auto = ${FW_AUTO_UPDATE:-1}
+stunden = ${FW_UPDATE_HOURS:-12}
+restart_cmd =
 "
 if [ ! -f "$CONF" ] || [ "$(cat "$CONF")" != "$NEW_CONF" ]; then
     printf '%s\n' "$NEW_CONF" > "$CONF"

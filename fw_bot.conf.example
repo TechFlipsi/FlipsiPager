@@ -31,3 +31,22 @@ max_users = 2000
 # InkyPi-E-Ink-Display (optional): URL der Display-API eintragen, leer = aus.
 # Beispiel: http://127.0.0.1:80/display_plugin_instance
 inkypi_api =
+
+[update]
+# Selbstaktualisierung: Der Bot prüft das neueste GitHub-Release.
+# Ist eine höhere Version da, lädt er die Bot-Datei, prüft die Syntax,
+# sichert die alte Datei (bak-update-<tag>) und startet neu.
+# Der Admin bekommt eine Meldung: "Update eingespielt" — bzw. bei
+# auto = 0 einmalig "Update verfügbar".
+
+# 1 = automatisch installieren (Default), 0 = nur melden
+auto = 1
+
+# Stunden zwischen den Update-Prüfungen (1–168, Default 12)
+stunden = 12
+
+# Eigener Neustart-Befehl (optional): Bleibt der Eintrag leer, beendet sich
+# der Prozess selbst — systemd (Restart=always) bzw. Docker
+# (restart: unless-stopped) starten ihn mit der neuen Version wieder.
+# Beispiel: restart_cmd = sudo -n systemctl restart feuerwehr-monitor
+restart_cmd =

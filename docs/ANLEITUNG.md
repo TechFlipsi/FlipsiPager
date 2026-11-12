@@ -99,9 +99,31 @@ nano ~/.config/fw_bot/fw_bot.conf
 sudo systemctl restart feuerwehr-monitor
 ```
 
-Alle Optionen sind in `fw_bot.conf.example` dokumentiert (Poll-Intervall, User-Limit, InkyPi, FF-Name, Org-ID).
+Alle Optionen sind in `fw_bot.conf.example` dokumentiert (Poll-Intervall, User-Limit, InkyPi, FF-Name, Org-ID, [update]-Sektion).
 
 **Wichtig:** Die Telegram-Kennung des Admins steht in **beiden** Dateien (`fw_bot.conf` → `admin_id` und `bot_token.env` → `FW_BOT_CHAT_ID`). Bei Änderung: beide anpassen.
+
+## 🔄 Updates
+
+Der Bot aktualisiert sich **selbst** (Standard an): Er prüft alle 12 Stunden das neueste GitHub-Release. Ist eine höhere Version da, lädt er sie, prüft die Syntax, sichert die alte Datei (`einsatz_watcher_v4.py.bak-update-<Tag>`) und startet neu — danach bekommst du als Admin die Meldung "Update eingespielt" inkl. Release-Link.
+
+```ini
+[update]
+auto = 1        # 0 = nur "Update verfügbar" melden, nicht installieren
+stunden = 12    # Prüf-Abstand in Stunden (1–168)
+restart_cmd =   # leer = Prozess beenden (systemd/Docker starten neu)
+```
+
+**Manuell einspielen** (falls du die Auto-Funktion abschalten willst):
+
+```bash
+cd ~/feuerwehr-monitor
+curl -fsSL https://raw.githubusercontent.com/TechFlipsi/FlipsiPager/main/einsatz_watcher_v4.py -o einsatz_watcher_v4.py
+chmod 700 einsatz_watcher_v4.py
+sudo systemctl restart feuerwehr-monitor
+```
+
+Deine Daten (`users.json`, State, Logs unter `~/.config/fw_bot/`) bleiben von Updates unberührt.
 
 ## 🔧 Wartung
 
@@ -111,17 +133,6 @@ journalctl -u feuerwehr-monitor -f     # Live-Log
 sudo systemctl restart feuerwehr-monitor   # Neustart
 sudo systemctl disable --now feuerwehr-monitor  # Autostart aus
 ```
-
-**Update auf neue Version:**
-
-```bash
-cd ~/feuerwehr-monitor
-curl -fsSL https://raw.githubusercontent.com/TechFlipsi/FlipsiPager/main/einsatz_watcher_v4.py -o einsatz_watcher_v4.py
-chmod 700 einsatz_watcher_v4.py
-sudo systemctl restart feuerwehr-monitor
-```
-
-Deine Daten (`users.json`, State, Logs unter `~/.config/fw_bot/`) bleiben davon unberührt.
 
 ## 🩺 Troubleshooting
 

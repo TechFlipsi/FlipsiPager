@@ -13,6 +13,8 @@ services:
       - FW_ORG_ID=${FW_ORG_ID:-}
       - FW_POLL_INTERVAL=${FW_POLL_INTERVAL:-60}
       - FW_MAX_USERS=${FW_MAX_USERS:-2000}
+      - FW_AUTO_UPDATE=${FW_AUTO_UPDATE:-1}
+      - FW_UPDATE_HOURS=${FW_UPDATE_HOURS:-12}
       - TZ=${TZ:-Europe/Vienna}
     volumes:
       - ./data:/data                       # alle Bot-Daten persistent

@@ -32,6 +32,7 @@ Der Einrichtungsassistent fragt alles ab (Feuerwehr-Name, Bot-Token, Admin-ID �
   und sendet den Link automatisch, sobald er veröffentlicht wird (Ort + Datum + Uhrzeit ±30 Minuten
   verriegelt, maximal ein Bericht je Einsatz und Chat)
 - ❄️ **Lawinen-Wache** — Lawinenlagebericht + Zonen-Warnung
+- 🔄 **Selbstaktualisierung** — installiert neue GitHub-Releases selbst, sichert die alte Datei als Backup, meldet dem Admin „Update eingespielt" (abschaltbar)
 - 🗣️ **Sprachalarm** — Alarme zusätzlich als Sprachnachricht (optional)
 - 📱 **Inline-Buttons** mit Karte & Navigation bei jedem Einsatz
 - 📊 Statistiken, Wochenrückblicke, Übungs-Historie, QR-Code zum Weiterschicken

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Feuerwehr-Einsatzmonitor v6 — Deutsche Befehle (Telegram erlaubt keine Umlaute im Befehl), Selbst-Löschung /vergessen, DSGVO-Transparenz"""
-import re, json, os, logging, time, sys, subprocess
+import re, json, os, logging, time, sys, subprocess, shutil, py_compile
 try:
     from pyproj import Transformer as _PegelTransformer
 except ImportError:
@@ -45,6 +45,9 @@ def _lade_fw_config():
         "inkypi_api": "http://127.0.0.1:80/display_plugin_instance",
         "inkypi_playlist": "Bilder",
         "inkypi_instance": "Feuerwehr",
+        "update_auto": "1",             # Selbstaktualisierung am GitHub-Release an/aus (1/0)
+        "update_stunden": "12",         # Abstand der Update-Prüfungen in Stunden
+        "update_restart_cmd": "",       # leer = Prozess beenden (systemd/Docker startet neu)
     }
     try:
         conf_path = os.path.expanduser("~/.config/fw_bot/fw_bot.conf")
@@ -82,6 +85,17 @@ def _lade_fw_config():
                 cfg["inkypi_playlist"] = cp.get("bot", "inkypi_playlist").strip() or cfg["inkypi_playlist"]
             if cp.has_option("bot", "inkypi_instance"):
                 cfg["inkypi_instance"] = cp.get("bot", "inkypi_instance").strip() or cfg["inkypi_instance"]
+            if cp.has_option("update", "auto"):
+                cfg["update_auto"] = cp.get("update", "auto").strip() or "1"
+            if cp.has_option("update", "stunden"):
+                try:
+                    v = int(cp.get("update", "stunden").strip())
+                    if 1 <= v <= 168:
+                        cfg["update_stunden"] = v
+                except (ValueError, TypeError):
+                    pass
+            if cp.has_option("update", "restart_cmd"):
+                cfg["update_restart_cmd"] = cp.get("update", "restart_cmd").strip()
             logger.info(f"fw_bot.conf geladen: FF {cfg['ff_name']} (Org {cfg['org_id']}), Poll {cfg['poll_interval']}s, Max-User {cfg['max_users']}")
         else:
             logger.info("fw_bot.conf nicht vorhanden — Standard-Werte aktiv (Original-Verhalten)")
@@ -96,6 +110,15 @@ ADMIN_ID_FALLBACK = _FW_CFG["admin_id_fallback"]
 ADMIN_USERNAME_DEFAULT = _FW_CFG["admin_username"]
 POLL_INTERVAL = _FW_CFG["poll_interval"]
 MAX_USERS = _FW_CFG["max_users"]
+# ── Selbstaktualisierung (GitHub-Release) ─────────────────────────
+# prüft zyklisch das neuste FlipsiPager-Release und installiert es selbst
+# (systemd Restart=always bzw. Docker restart: unless-stopped holen den
+# Prozess nach dem Beenden mit der neuen Version zurück).
+BOT_VERSION = "1.2.2"
+UPDATE_REPO = "TechFlipsi/FlipsiPager"
+AUTO_UPDATE = str(_FW_CFG.get("update_auto", "1")).strip() == "1"
+UPDATE_HOURS = int(_FW_CFG.get("update_stunden", 12))
+UPDATE_RESTART_CMD = str(_FW_CFG.get("update_restart_cmd", "")).strip()
 INKYPI_ENABLED = bool(_FW_CFG["inkypi_api"].strip())
 INKYPI_API = _FW_CFG["inkypi_api"].strip() if _FW_CFG["inkypi_api"].strip() else None
 INKYPI_PLUGIN_DATA = {"playlist_name": _FW_CFG["inkypi_playlist"], "plugin_id": "screenshot", "plugin_instance": _FW_CFG["inkypi_instance"]}
@@ -3652,6 +3675,135 @@ def check_medienberichte(users):
     _berichte_save(zustand)
 
 
+# ═══ Selbstaktualisierung (GitHub-Release) ═══
+# Zyklische Prüfung des neuesten FlipsiPager-Releases. Höhere Version →
+# Bot-Datei des Tags herunterladen, Syntax prüfen, aktive Datei ersetzen
+# (mit Backup), Admin informieren und Prozess beenden — systemd (Restart=always)
+# bzw. Docker (restart: unless-stopped) starten automatisch die neue Version.
+# UPDATE_RESTART_CMD (optionaler Konfig-Key): eigener Neustart-Befehl statt Exit.
+# update_auto = 0: KEINE Installation — nur einmalige „Update verfügbar"-Meldung.
+
+UPDATE_STATE_FILE = os.path.join(STATE_DIR, "update_state.json")
+
+
+def _update_tag_int(tag):
+    """Release-Tag ("v1.2.2" oder "1.2.2") → (1, 2, 2); unlesbar → None."""
+    m = re.match(r"v?(\d+)\.(\d+)\.(\d+)", (tag or "").strip())
+    if not m:
+        return None
+    return tuple(int(x) for x in m.groups())
+
+
+def _update_lade_state():
+    state = load_state(UPDATE_STATE_FILE)
+    if not isinstance(state, dict):
+        state = {}
+    state.setdefault("last_check", 0)
+    state.setdefault("gemeldet_tag", "")
+    return state
+
+
+def _update_letzte_version():
+    """Neueste Release-Version aus GitHub — (tag, url) oder None."""
+    url = "https://api.github.com/repos/%s/releases/latest" % UPDATE_REPO
+    req = urllib.request.Request(url, headers={"User-Agent": LAUMAT_UA, "Accept": "application/vnd.github+json"})
+    with urllib.request.urlopen(req, timeout=20) as resp:
+        daten = json.loads(resp.read().decode("utf-8", errors="replace"))
+    tag = (daten.get("tag_name") or "").strip()
+    if not tag:
+        return None
+    return tag, daten.get("html_url") or "https://github.com/%s/releases" % UPDATE_REPO
+
+
+def _update_datei_holen(tag):
+    """Bot-Datei des Release-Tags laden (Bytes)."""
+    raw = "https://raw.githubusercontent.com/%s/%s/einsatz_watcher_v4.py" % (UPDATE_REPO, tag)
+    req = urllib.request.Request(raw, headers={"User-Agent": LAUMAT_UA})
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        return resp.read()
+
+
+def _update_ziel_datei():
+    """Pfad der aktiven Bot-Datei (dorthin wird die neue Version geschrieben)."""
+    return os.path.abspath(__file__)
+
+
+def check_selbstaktualisierung():
+    """Release-Check im UPDATE_HOURS-Takt: Auto-Install (mit Backup + Admin-Meldung)
+    oder — bei update_auto=0 — einmalige „Update verfügbar"-Meldung je Version."""
+    jetzt = time.time()
+    state = _update_lade_state()
+    if jetzt - state.get("last_check", 0) < UPDATE_HOURS * 3600:
+        return
+    state["last_check"] = jetzt
+    try:
+        neu = _update_letzte_version()
+    except Exception as e:
+        logger.debug(f"Selbstaktualisierung: Update-Quelle nicht erreichbar ({e})")
+        _update_save_state(state)
+        return
+    if not neu:
+        _update_save_state(state)
+        return
+    tag, url = neu
+    eigene, fremd = _update_tag_int(BOT_VERSION), _update_tag_int(tag)
+    if not fremd or (eigene and fremd <= eigene):
+        _update_save_state(state)
+        return
+    logger.info(f"Selbstaktualisierung: {tag} verfügbar (läuft v{BOT_VERSION})")
+    if not AUTO_UPDATE:
+        if state.get("gemeldet_tag") != tag and ADMIN_ID:
+            send_to(ADMIN_ID, "⬆️ <b>Update verfügbar</b>\n"
+                    f"🆕 {esc(tag)} (läuft: v{esc(BOT_VERSION)})\n"
+                    f"ℹ️ Auto-Install ist aus — manuell einspielen oder config: update auto = 1\n"
+                    f"🔗 {esc(url)}")
+        state["gemeldet_tag"] = tag
+        _update_save_state(state)
+        return
+    # Auto-Installation: Download → Syntax-Prüfung → Backup → Austausch → Neustart
+    staged = os.path.join(STATE_DIR, "update_staged.py")
+    try:
+        daten = _update_datei_holen(tag)
+        with open(staged, "wb") as f:
+            f.write(daten)
+        py_compile.compile(staged, doraise=True)
+    except Exception as e:
+        logger.warning(f"Selbstaktualisierung: Download/Syntax-Prüfung fehlgeschlagen ({e}) — nächster Versuch in 1 h")
+        state["last_check"] = jetzt - UPDATE_HOURS * 3600 + 3600
+        _update_save_state(state)
+        return
+    ziel = _update_ziel_datei()
+    try:
+        shutil.copyfile(ziel, ziel + ".bak-update-" + tag)
+        os.replace(staged, ziel)
+    except Exception as e:
+        logger.error(f"Selbstaktualisierung: Datei-Austausch fehlgeschlagen ({e})")
+        _update_save_state(state)
+        return
+    verlauf = "Neuerungen: siehe Release-Notizen"
+    if ADMIN_ID:
+        send_to(ADMIN_ID, "⬆️ <b>Update eingespielt</b>\n"
+                f"🆕 v{esc(BOT_VERSION)} → <b>{esc(tag)}</b>\n"
+                f"{verlauf}: {esc(url)}\n"
+                "🔄 Bot startet neu — gleich wieder online.")
+    state["gemeldet_tag"] = tag
+    _update_save_state(state)
+    logger.info(f"Selbstaktualisierung: Update auf {tag} eingespielt (Backup: {ziel}.bak-update-{tag})")
+    if UPDATE_RESTART_CMD:
+        try:
+            subprocess.run(UPDATE_RESTART_CMD, shell=True, timeout=30)
+            logger.info("Selbstaktualisierung: Restart-Befehl ausgeführt")
+        except Exception as e:
+            logger.error(f"Selbstaktualisierung: Restart-Befehl fehlgeschlagen ({e}) — Neustart bitte manuell")
+    else:
+        logger.info("Selbstaktualisierung: Prozess wird beendet (Aufseher startet die neue Version)")
+        sys.exit(0)
+
+
+def _update_save_state(state):
+    save_state(UPDATE_STATE_FILE, state)
+
+
 # ═══ /testalarm ═══
 def send_testalarm(chat_id):
     """Simulierter Probe-Alarm: prüft die Alarm-Zustellung, ohne echten Einsatz zu brauchen."""
@@ -5866,6 +6018,11 @@ def main():
                 check_medienberichte(load_users())
             except Exception as ber_w_err:
                 logger.debug(f"Berichte-Wache Fehler: {ber_w_err}")
+            # Selbstaktualisierung: GitHub-Release-Check (Default 12-Stunden-Takt)
+            try:
+                check_selbstaktualisierung()
+            except Exception as upd_err:
+                logger.debug(f"Selbstaktualisierung Fehler: {upd_err}")
             # Wochenrückblick: sonntags 20:00 für User mit /wochen aktiv
             send_week_digests()
             html = fetch_ooelfv(SOURCE_URL)
