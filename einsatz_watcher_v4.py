@@ -566,7 +566,7 @@ def handle_callback(cq):
             laeuft = None
             beendet_info = None  # Einsatz-Objekt vom Tag-Abruf (für Abschlussbericht-Ersatz)
             try:
-                einsatzliste_cb = parse_einsaetze_full(fetch_ooelfv(SOURCE_URL)) or []
+                einsatzliste_cb = lade_einsaetze_alle() or []
                 ort_lower = ort.lower()
                 laeuft = False  # Abruf erfolgreich → standard: läuft NICHT, bis Treffer gefunden
                 for e in einsatzliste_cb:
@@ -869,6 +869,56 @@ def _ort_koordinaten(ort):
     except Exception as e:
         logger.debug(f"Geocoding fehlgeschlagen für {ort}: {e}")
     return None
+
+
+ORT_LAND_FILE = os.path.join(os.path.dirname(USERS_FILE), "ort_land.json")
+
+
+def _ort_bundesland(ort):
+    "Bundesland des Orts (Nominatim address.state), dauerhaft gecacht (ort_land.json)."
+    key = ort.lower().strip()
+    cache = {}
+    try:
+        if os.path.exists(ORT_LAND_FILE):
+            with open(ORT_LAND_FILE, encoding="utf-8") as f:
+                cache = json.load(f)
+        if key in cache:
+            return cache[key] or None
+    except Exception:
+        cache = {}
+    try:
+        from urllib.parse import quote as _q
+        url = f"https://nominatim.openstreetmap.org/search?q={_q(ort + ' Österreich')}&format=json&addressdetails=1&limit=1&countrycodes=at"
+        req = urllib.request.Request(url, headers={"User-Agent": UA_NOMINATIM})
+        with urllib.request.urlopen(req, timeout=12) as resp:
+            d = json.loads(resp.read().decode("utf-8", errors="replace"))
+        land = (d[0].get("address", {}).get("state") or "") if d else ""
+        cache[key] = land
+        try:
+            with open(ORT_LAND_FILE, "w", encoding="utf-8") as f:
+                json.dump(cache, f, ensure_ascii=False)
+        except Exception:
+            pass
+        return land or None
+    except Exception as e:
+        logger.debug(f"Bundesland-Lookup fehlgeschlagen für {ort}: {e}")
+        return None
+
+
+def user_standard_quelle(user_data):
+    "Lage-Standard eines Users aus seinen Beobachtungen: OÖ / NÖ / BOTH (beide)."
+    laender = set()
+    for ort in (user_data.get("orte", []) or []) + (user_data.get("einsatz_watches", []) or []):
+        land = _ort_bundesland(ort)
+        if land:
+            laender.add(land.lower())
+    hat_oe = "oberösterreich" in laender
+    hat_noe = "niederösterreich" in laender
+    if hat_oe and hat_noe:
+        return "BOTH"
+    if hat_noe:
+        return "NÖ"
+    return "OÖ"
 
 
 def _haversine_km(lat1, lon1, lat2, lon2):
@@ -1793,10 +1843,12 @@ def anleitung_text():
         "\U0001f692 <b>Feuerwehr-Monitor Bot — Anleitung</b>\n"
         "\U0001f50d <b>Woher kommen die Daten?</b>\n"
         "Der Bot liest live die Einsatzseiten des O\u00d6 Landesfeuerwehrverbands "
-        "(einsaetze.ooelfv.at) und die Einsatzhistorie auf einsaetze.at. Alle ~5 Sekunden "
-        "wird gepr\u00fcft, ob sich etwas an den laufenden Eins\u00e4tzen \u00e4ndert — "
+        "(einsaetze.ooelfv.at), die Einsatzhistorie auf einsaetze.at und die "
+        "N\u00d6-Einsatzdaten der Landeswarnzentrale N\u00d6 (Grisu/WASTL, florian10.info). "
+        "Alle ~5 Sekunden wird gepr\u00fcft, ob sich etwas an den laufenden Eins\u00e4tzen \u00e4ndert — "
         "deswegen sind die Meldungen fast in Echtzeit. Es gibt keine offizielle App-Funktion "
-        "dafür, der Bot parst die \u00f6ffentlichen Seiten selbst.\n\n"
+        "dafür, der Bot parst die \u00f6ffentlichen Seiten selbst. Beobachtungen funktionieren "
+        "sowohl in Ober\u00f6sterreich als auch in Nieder\u00f6sterreich.\n\n"
         "\U0001f514 <b>Wie funktioniert eine Beobachtung?</b>\n"
         "\u2022 <b>/ort &lt;Ort&gt;</b> — Dauerhafte \u00dcberwachung: Jeder Einsatz in diesem Ort "
         "l\u00f6st sofort eine Meldung aus, bis du ihn selbst wieder entfernst.\n"
@@ -2401,6 +2453,169 @@ def check_pegel_for_users(users):
     seen = {k: v for k, v in seen.items() if k in aktive_keys}
     state["seen"] = seen
     _save_pegel_state(state)
+
+# ═══ Pegel-Wache NÖ (Wasserstandsnachrichten NÖ, kidat MapList) ═══
+# Sir-Order 12.11.2026: Bot generell für OÖ + NÖ. Quelle: offizielle JSON der
+# NÖ-Wasserstandsnachrichten (1082 Messstellen mit Lat/Long + ClassID).
+# ClassID je Parameter (Wasserstand): 1 normal, 2 erhöht, 3/4 Hochwasser-Alarm.
+# Alarm ab ClassID 3; Entwarnung, wenn die gemerkte Station wieder unter 3 fällt.
+
+NOE_PEGEL_URL = "https://www.noel.gv.at/wasserstand/kidata/maplist/MapList.json"
+NOE_PEGEL_FILE = os.path.join(STATE_DIR, "pegel_noe_state.json")
+NOE_PEGEL_ALARMIN = 3          # ClassID ab der gemeldet wird
+NOE_PEGEL_CHECK_MIN = 15       # Poll-Rhythmus (Minuten)
+PEGEL_NOE_KILOMETER_UMKREIS = 20
+
+
+def _load_noe_pegel_state():
+
+    """NÖ-Pegel-State."""
+
+    state = load_state(NOE_PEGEL_FILE)
+    if not isinstance(state, dict):
+        state = {}
+    state.setdefault("seen", {})
+    state.setdefault("last_check", 0)
+    return state
+
+
+def _save_noe_pegel_state(state):
+    save_state(NOE_PEGEL_FILE, state)
+
+
+def _noe_pegel_label(classid):
+
+    """NÖ-4-Stufen-Kategorie → Meldungs-Label; None = normal/kein Alarm."""
+
+    try:
+        i = int(classid)
+    except (TypeError, ValueError):
+        return None
+    if i >= 4:
+        return "🟥 Hochwasseralarm (Stufe 1)"
+    if i == 3:
+        return "🟧 Hochwasseralarm (Stufe 2)"
+    return None
+
+
+def fetch_pegel_aktiv_noe():
+    """Wasserstand-Stationen des NÖ-Feeds in das generische Pegel-Item-Format."""
+
+    req = urllib.request.Request(NOE_PEGEL_URL, headers={"User-Agent": LAUMAT_UA})
+    with urllib.request.urlopen(req, timeout=25) as resp:
+        roh = json.loads(resp.read().decode("utf-8", errors="replace"))
+    out = []
+    for e in roh or []:
+        if e.get("Parameter") != "Wasserstand":
+            continue
+        out.append({
+            "station_no": (e.get("Stationnumber") or "?"),
+            "station_name": (e.get("Stationname") or "?"),
+            "river_name": (e.get("Rivername") or "?"),
+            "station_latitude": e.get("Lat"),
+            "station_longitude": e.get("Long"),
+            "ts_value": e.get("Value"),
+            "ts_unitsymbol": (e.get("Unit") or "cm"),
+            "timestamp": (e.get("Timestamp") or ""),
+            "AlarmClassification": e.get("ClassID"),
+        })
+    return out
+
+
+def pegel_text_fuer_orte_noe(orte):
+    """Formatierter NÖ-Pegel-Report für eine Liste von Orten (für /pegel)."""
+
+    alle = fetch_pegel_aktiv_noe()
+    if not alle:
+        return None
+    bloecke = []
+    for ort in orte:
+        coords = _ort_koordinaten(ort)
+        if not coords:
+            continue
+        naehe = _pegel_nahe_stationen(ort, alle, coords, PEGEL_NOE_KILOMETER_UMKREIS)
+        if not naehe:
+            continue
+        ort_anzeige = _ort_anzeige_cap(ort)
+        z = [f"<b>Pegel NÖ um {esc(ort_anzeige)} ({PEGEL_NOE_KILOMETER_UMKREIS} km):</b>"]
+        for s2 in sorted(naehe, key=lambda x: (str(x.get("river_name") or ""), str(x.get("station_name") or ""))):
+            stufe = _noe_pegel_label(s2.get("AlarmClassification"))
+            wert = s2.get("ts_value")
+            einheit = s2.get("ts_unitsymbol") or ""
+            zeit = (str(s2.get("timestamp") or ""))[11:16]
+            zeile = f"• {esc(s2.get('station_name') or '?')} ({esc(s2.get('river_name') or '?')}): {esc(str(wert))} {esc(einheit)} um {esc(zeit)} Uhr"
+            if stufe:
+                zeile += f" — ⚠️ <b>{esc(stufe)}</b>"
+            z.append(zeile)
+        bloecke.append("\n".join(z))
+    return "\n\n".join(bloecke) if bloecke else None
+
+
+def check_pegel_noe_for_users(users):
+    """NÖ-Pegel-Wache im Haupt-Loop: ClassID-3/4-Alarm rund um beobachtete Orte, Entwarnung (Dedup pegel_noe_state)."""
+
+    now = time.time()
+    state = _load_noe_pegel_state()
+    if now - state.get("last_check", 0) < NOE_PEGEL_CHECK_MIN * 60:
+        return
+    state["last_check"] = now
+    orte_map = {}
+    for cid, ud in users.get("users", {}).items():
+        if ud.get("silent"):
+            continue
+        # NÖ-Pegel-Wache nur für User mit NÖ-Standard oder Misch-Watchliste (Sir-Regel: OÖ = Standard)
+        if user_standard_quelle(ud) == "OÖ":
+            continue
+        for ort in ud.get("orte", []):
+            orte_map.setdefault(ort.lower().strip(), set()).add(int(cid))
+    if not orte_map:
+        _save_noe_pegel_state(state)
+        return
+    alle = fetch_pegel_aktiv_noe()
+    if not alle:
+        _save_noe_pegel_state(state)
+        return
+    seen = dict(state.get("seen", {}))
+    aktive_keys = set()
+    for ort_key, chat_ids in orte_map.items():
+        coords = _ort_koordinaten(ort_key)
+        if not coords:
+            continue
+        naehe = _pegel_nahe_stationen(ort_key, alle, coords, PEGEL_NOE_KILOMETER_UMKREIS)
+        ort_anzeige = _ort_anzeige_cap(ort_key)
+        for s2 in naehe:
+            stufe = _noe_pegel_label(s2.get("AlarmClassification"))
+            skey = f"pn:{s2.get('station_no')}:{ort_key}"
+            if stufe:
+                aktive_keys.add(skey)
+                if seen.get(skey) != stufe:
+                    seen[skey] = stufe
+                    msg = (f"🌊 <b>Pegel-Alarm NÖ — {esc(ort_anzeige)}</b>\n"
+                           f"{esc(s2.get('station_name') or '?')} ({esc(s2.get('river_name') or '?')}): "
+                           f"<b>{esc(str(s2.get('ts_value')))} {esc(s2.get('ts_unitsymbol') or '')}</b>\n"
+                           f"{esc(stufe)} · Stand {(str(s2.get('timestamp')) or '')[11:16]} Uhr · Quelle land.noe.gv.at")
+                    kb_p = {"inline_keyboard": [[btn_karte_url(ort_anzeige), btn_navi_url(ort_anzeige)]]}
+                    for cid in chat_ids:
+                        ud = users.get("users", {}).get(str(cid), {})
+                        if ud.get("silent"):
+                            continue
+                        send_to(cid, msg, reply_markup=kb_p)
+            else:
+                if skey in seen:
+                    alt_stufe = seen.pop(skey)
+                    msg = (f"🔓 <b>Pegel NÖ beruhigt — {esc(ort_anzeige)}</b>\n"
+                           f"{esc(s2.get('station_name') or '?')} ({esc(s2.get('river_name') or '?')}): "
+                           f"{esc(str(s2.get('ts_value')))} {esc(s2.get('ts_unitsymbol') or '')} — "
+                           f"war {esc(alt_stufe)}, jetzt wieder normal.")
+                    for cid in chat_ids:
+                        ud = users.get("users", {}).get(str(cid), {})
+                        if ud.get("silent"):
+                            continue
+                        send_to(cid, msg)
+    seen = {k: v for k, v in seen.items() if k in aktive_keys}
+    state["seen"] = seen
+    _save_noe_pegel_state(state)
+
 
 # ═══ Sprachnachricht-Alarm (Piper TTS, opt-in via /stimme) ═══
 PIPER_BIN = os.path.expanduser("~/.local/bin/piper")
@@ -3416,6 +3631,131 @@ def check_sirenen_ticker(users):
         state["ticker"] = ticker_state
         _save_sirenen_state(state)
         logger.info(f"Sirenen-Ticker: Signal '{sig['name']}' an {n} Nutzer")
+# ═══ NÖ-Einsätze (Grisu NÖ / WASTL — florian10.info) ═══
+# Zweite Einsatz-Quelle neben OOELFV (Sir-Order 12.11.2026: Bot für OÖ + NÖ).
+# Die NÖ-Landesfeuerwehrinfoscreen-App (Grisu NÖ, open source) liest die
+# WASTL-Schnittstelle (Landeswarnzentrale NÖ) — gleiche Datenbasis:
+# getMainData (Bezirke + Anzahl laufender Einsätze), getEinsatzAktiv
+# (aktive Einsatz-IDs je Bezirk), geteinsatzdata (Details mit disponierten
+# Feuerwehren). Die Items werden in das OOELFV-Format übersetzt, damit
+# Meldungs-, Watch- und Räum-Logik generisch weiterläuft.
+# Grenze: Kein BAZ-Mistelbach-Style-Tippfehler-Index (einsaetze.at = OÖ-Fokus)
+# und keine Endzeiten im Feed — BEENDET meldet die Dauer bis zur Meldung.
+
+GRISU_BASE = "https://infoscreen.florian10.info/OWS/wastlMobile/"
+NOE_BEZIRKE = {
+    "01": "Amstetten", "02": "Baden", "03": "Bruck/Leitha", "04": "Gänserndorf",
+    "05": "Gmünd", "061": "Klosterneuburg", "062": "Purkersdorf", "063": "Schwechat",
+    "07": "Hollabrunn", "08": "Horn", "09": "Stockerau", "10": "Krems",
+    "11": "Lilienfeld", "12": "Melk", "13": "Mistelbach", "14": "Mödling",
+    "15": "Neunkirchen", "17": "St. Pölten", "18": "Scheibbs", "19": "Tulln",
+    "20": "Waidhofen/Thaya", "21": "Wr. Neustadt", "22": "Zwettl",
+}
+NOE_DEMO_ORT = "Demogemeinde"  # WASTL-Dauertest-Datensatz — nie melden
+GRISU_CACHE_SEK = 60           # Die NÖ-App cacht selbst ~60 s — Bot hält sich daran
+_grisu_cache = [None, 0.0]
+
+
+def _grisu_json(url):
+    req = urllib.request.Request(url, headers={"User-Agent": LAUMAT_UA})
+    with urllib.request.urlopen(req, timeout=20) as resp:
+        return json.loads(resp.read().decode("utf-8", errors="replace"))
+
+
+def _grisu_startzeit(eintrag):
+    """Grisu d ("12.11.2026") + t ("10:46:30") → OOELFV-Start-Format "12.11. 10:46"."""
+    d = (eintrag.get("d") or "").strip()
+    t = (eintrag.get("t") or "").strip()
+    try:
+        return f"{d[:6]} {t[:5]}".strip()
+    except Exception:
+        return ""
+
+
+def fetch_grisu_einsaetze():
+    """Aktive NÖ-Einsätze als OOELFV-Item-Liste (60-s-Cache, Demo-Datensätze raus)."""
+    jetzt = time.time()
+    if _grisu_cache[0] is not None and jetzt - _grisu_cache[1] < GRISU_CACHE_SEK:
+        return _grisu_cache[0]
+    main = _grisu_json(GRISU_BASE + "getMainData.ashx")
+    liste = []
+    for baz in main.get("Bezirke", []):
+        code = (baz.get("k") or "").strip()
+        if (baz.get("e") or 0) <= 0 or code not in NOE_BEZIRKE:
+            continue
+        aktiv = _grisu_json(GRISU_BASE + "getEinsatzAktiv.ashx?id=bezirk_" + code)
+        for eintrag in aktiv.get("Einsatz", []):
+            ort = (eintrag.get("o") or "").strip()
+            if not ort or ort == NOE_DEMO_ORT:
+                continue
+            start = _grisu_startzeit(eintrag)
+            fw_liste = []
+            einsatz_id = (eintrag.get("i") or "").strip()
+            if einsatz_id:
+                try:
+                    detail = _grisu_json(GRISU_BASE + "geteinsatzdata.ashx?id=" + urllib.parse.quote(einsatz_id, safe=""))
+                    for dispo in detail.get("Dispo", []):
+                        name = (dispo.get("n") or "").strip()
+                        if name:
+                            fw_liste.append({"name": name, "start": start, "end": None})
+                except Exception:
+                    pass
+            if not fw_liste:
+                fw_liste = [{"name": "NÖ-Alarmzentrum", "start": start, "end": None}]
+            liste.append({
+                "ort": ort,
+                "bezirk": "BAZ " + NOE_BEZIRKE[code],
+                "bezirk_kuerzel": code,
+                "stichwort": (eintrag.get("m") or "").strip(),
+                "typ": "🟦 NÖ",
+                "farbe": "blue",
+                "feuerwehren": fw_liste,
+            })
+    _grisu_cache[0] = liste
+    _grisu_cache[1] = jetzt
+    return liste
+
+
+def lage_nachricht(oe_liste, noe_liste, quelle="", watches=None):
+    """Text + Keyboard für /lage. quelle: "" = Standard, "OÖ", "NÖ".
+    Standard zeigt OÖ; NÖ-Zeilen nur bei expliziter Quelle oder wenn eine
+    Watch des Users einen laufenden NÖ-Einsatz trifft."""
+    watches = watches or []
+    if quelle == "":  # Fallback ohne erkennbares Bundesland: OÖ-Standard
+        quelle = "OÖ"
+    zeigt_oe = quelle != "NÖ"
+    zeigt_noe = quelle in ("NÖ", "BOTH")
+    einsaetze = (oe_liste if zeigt_oe else []) + (noe_liste if zeigt_noe else [])
+    if not einsaetze:
+        if zeigt_oe and zeigt_noe:
+            return "✅ Keine laufenden Einsätze in OÖ und NÖ.", None
+        if quelle == "NÖ":
+            return "✅ Keine laufenden Einsätze in NÖ. (OÖ-Standard: /lage)", None
+        return "✅ Keine laufenden Einsätze in OÖ. (NÖ-Quelle: /lage nö)", None
+    label = "(OÖ+NÖ)" if (zeigt_oe and zeigt_noe) else ("(OÖ)" if zeigt_oe else "(NÖ)")
+    msg_text = "📊 <b>Aktuelle Einsätze " + label + ": " + str(len(einsaetze)) + "</b>\n\n"
+    for e in einsaetze:
+        fw_count = len(e["feuerwehren"])
+        fw0 = e["feuerwehren"][0] if e["feuerwehren"] else {}
+        zeit = fw0.get("start", "?")
+        msg_text += f"{esc(e['typ'])} <b>{esc(e['ort'])}</b> ({esc(e['bezirk'])}): {esc(e['stichwort'])} — {fw_count} FW, ab {zeit}\n"
+    kb = zeilen_keyboard([e["ort"] for e in einsaetze])
+    return msg_text, kb
+
+
+def lade_einsaetze_alle(oe_liste=None):
+    """Aktive Einsätze: OOELFV (OÖ) + Grisu/WASTL (NÖ) in einer Liste.
+    Wenn oe_liste (bereits geparste OOELFV-Liste) übergeben wird, wird die
+    OOELFV-Quelle nicht erneut abgerufen. Fällt die NÖ-Quelle aus, bleibt
+    die Liste still bei den OÖ-Daten (kein Alarm-Ausfall)."""
+    liste = oe_liste if oe_liste is not None else (parse_einsaetze_full(fetch_ooelfv(SOURCE_URL)) or [])
+    try:
+        liste += fetch_grisu_einsaetze()
+    except Exception as e:
+        logger.debug(f"NÖ-Quelle (Grisu/WASTL) fehlgeschlagen: {e}")
+    return liste
+
+
 # ═══ Medienbericht-Wache (laumat.at) ═══
 # Nach einem Einsatz an einem beobachteten Ort (dauerhafte /ort-Beobachtung ODER
 # temporäre /einsatz-Watch) sucht der Bot auf der laumat.at-Bezirksseite nach dem
@@ -4282,13 +4622,17 @@ def handle_bot_commands():
                         send_to(chat_id, "\u2139\ufe0f Beobachte zuerst Orte mit /ort — Pegel werden rund um deine Orte gesucht.")
                         continue
                     send_to(chat_id, "\U0001f30a Pegel werden geladen\u2026")
-                    rep = pegel_text_fuer_orte(orte_u)
-                    if rep:
-                        send_to(chat_id, rep)
+                    rep = pegel_text_fuer_orte(orte_u) or ""
+                    rep_noe = pegel_text_fuer_orte_noe(orte_u)
+                    if isinstance(rep_noe, str):
+                        rep_noe = "\n\n" + rep_noe
                     else:
-                        send_to(chat_id, "\U0001f30a Keine Pegel im 20-km-Umkreis deiner Orte.\n"
-                                         "Hinweis: Die Pegel-Wache deckt Ober\u00f6sterreich ab (Hydro O\u00d6) — "
-                                         "Orte au\u00dferhalb O\u00d6 (z.\u202fB. Nieder\u00f6sterreich) haben keine Pegel-Abdeckung.")
+                        rep_noe = ""
+                    gesamt = (rep + rep_noe).strip()
+                    if gesamt:
+                        send_to(chat_id, gesamt)
+                    else:
+                        send_to(chat_id, "\U0001f30a Keine Pegel im 20-km-Umkreis deiner Orte (OÖ und NÖ geprüft).")
                 except Exception as pe:
                     logger.error(f"/pegel Fehler: {pe}")
                     send_to(chat_id, "\u26a0\ufe0f Pegel-Abruf fehlgeschlagen.")
@@ -4676,23 +5020,19 @@ def handle_bot_commands():
                 msg_w += "ℹ️ Beobachtete Orte werden automatisch auf Warnungen geprüft (ab Stufe 2 kommt der Alarm)."
                 send_to(chat_id, msg_w, reply_markup=zeilen_keyboard([oz for oz, _ in gefundene[:12]]))
 
-            elif text == "/lage":
+            elif text == "/lage" or text.startswith("/lage "):
+                parts_l = text.split(None, 1)
+                arg_l = (parts_l[1].strip().upper() if len(parts_l) > 1 else "")
+                quelle_l = arg_l if arg_l in ("OÖ", "NÖ", "OOE", "NOE") else ""
+                if quelle_l in ("OOE", "NOE"):
+                    quelle_l = quelle_l.replace("OE", "Ö")
                 try:
-                    html = fetch_ooelfv(SOURCE_URL)
-                    einsaetze = parse_einsaetze_full(html)
-                    if einsaetze:
-                        m = re.search(r"Einsätze:\s*(\d+),\s*Feuerwehren:\s*(\d+)", html)
-                        n = m.group(1) if m else "?"
-                        msg_text = f"\U0001f4ca <b>Aktuelle Einsätze (OÖ): {n}</b>\n\n"
-                        for e in einsaetze:
-                            fw_count = len(e["feuerwehren"])
-                            fw0 = e["feuerwehren"][0] if e["feuerwehren"] else {}
-                            zeit = fw0.get("start", "?")
-                            msg_text += f"{esc(e['typ'])} <b>{esc(e['ort'])}</b> ({esc(e['bezirk'])}): {esc(e['stichwort'])} — {fw_count} FW, ab {zeit}\n"
-                        kb = zeilen_keyboard([e["ort"] for e in einsaetze])
-                        send_to(chat_id, msg_text, reply_markup=kb)
-                    else:
-                        send_to(chat_id, "\u2705 Keine laufenden Einsätze in OÖ.")
+                    oe_liste_l = parse_einsaetze_full(fetch_ooelfv(SOURCE_URL))
+                    standard_l = user_standard_quelle(user_data)
+                    quelle_l = arg_l if arg_l in ("OÖ", "NÖ") else standard_l
+                    noe_liste_l = fetch_grisu_einsaetze() if quelle_l != "OÖ" else []
+                    msg_text, kb_l = lage_nachricht(oe_liste_l, noe_liste_l, quelle_l, [])
+                    send_to(chat_id, msg_text, reply_markup=kb_l)
                 except Exception:
                     send_to(chat_id, "\u26a0\ufe0f Fehler beim Abruf.")
 
@@ -5088,8 +5428,7 @@ def handle_bot_commands():
                 bereinigt = []
                 if einsatz_watches:
                     try:
-                        html_akt = fetch_ooelfv(SOURCE_URL)
-                        liste_akt = parse_einsaetze_full(html_akt) or []
+                        liste_akt = lade_einsaetze_alle() or []
                         aktive_orte = [e.get("ort", "").lower() for e in liste_akt]
                         aktive_fw_namen = [fw["name"].lower() for e in liste_akt for fw in e.get("feuerwehren", [])]
                         tag_e_mb = parse_einsaetze_full(get_tag_html()) or []
@@ -5327,13 +5666,24 @@ def handle_bot_commands():
                 cmd_typ = text.split(None, 1)[0]
                 such_typ, emoji, plural = TYP_ABFRAGEN[cmd_typ]
                 such = text.split(None, 1)[1].strip()[:100] if text.startswith(cmd_typ + " ") else ""
-                such_lower = such.lower()
+                tokens_br = such.split()
+                suffix_br = tokens_br[-1].upper() if tokens_br and tokens_br[-1].lower().replace("e", "ö") in ("nö", "oö") else ""
+                # Suffix "noe"/"ooe" (ASCII) auch zulassen
+                if not suffix_br and tokens_br and tokens_br[-1].lower() in ("noe", "ooe"):
+                    suffix_br = "NÖ" if tokens_br[-1].lower() == "noe" else "OÖ"
+                ort_such = " ".join(tokens_br[:-1]) if suffix_br else such
+                such_lower = ort_such.lower()
                 such_ist_bezirk = len(such_lower) <= 3 and such_lower.isalpha()
+                if not such_lower and suffix_br:
+                    continue
                 if not such_lower:
-                    send_to(chat_id, "Usage: %s &lt;Ort oder Bezirks-Kürzel&gt;\nBeispiele: /brand Lengau — laufende Brände in Lengau\n/brand WL — alle laufenden Brände im Bezirk Wels-Land" % cmd_typ)
+                    send_to(chat_id, "Usage: %s &lt;Ort oder Bezirks-Kürzel&gt; [nö]\nBeispiele: /brand Lengau — laufende Brände in Lengau\n/brand WL — alle laufenden im Bezirk Wels-Land\n/brand St. Pölten nö — NÖ-Quelle" % cmd_typ)
                     continue
                 try:
-                    einsaetze_a = parse_einsaetze_full(fetch_ooelfv(SOURCE_URL))
+                    if suffix_br == "NÖ":
+                        einsaetze_a = fetch_grisu_einsaetze()
+                    else:
+                        einsaetze_a = parse_einsaetze_full(fetch_ooelfv(SOURCE_URL))
                 except Exception:
                     einsaetze_a = []
                 if not einsaetze_a:
@@ -5350,7 +5700,15 @@ def handle_bot_commands():
                     if such_ist_bezirk:
                         send_to(chat_id, "\u2705 Es gibt aktuell keine %s im Bezirk %s." % (plural, esc(such.upper())))
                     else:
-                        send_to(chat_id, "\u2705 Es gibt aktuell keine %s in %s." % (plural, esc(such)))
+                        try:
+                            hit_noe = any(ort_such.lower() in (e.get("ort") or "").lower()
+                                          for e in fetch_grisu_einsaetze())
+                        except Exception:
+                            hit_noe = False
+                        tip = ("\n💡 NÖ-Treffer möglich: mit „%s %s nö” suchst du in der NÖ-Quelle."
+                               % (cmd_typ, ort_such)) if hit_noe else ""
+                        send_to(chat_id, "\u2705 Es gibt aktuell keine %s in %s (O\u00d6-Quelle).%s"
+                                % (plural, esc(such), tip))
                     continue
                 if such_ist_bezirk:
                     msg = "%s <b>%s heute im Bezirk %s (%d):</b>\n\n" % (emoji, plural, esc(such.upper()), len(treffer))
@@ -5386,7 +5744,7 @@ def handle_bot_commands():
                     continue
                 send_to(chat_id, "\U0001f4cdSuche laufende Einsätze im Umkreis …")
                 try:
-                    einsaetze_all_um = parse_einsaetze_full(fetch_ooelfv(SOURCE_URL))
+                    einsaetze_all_um = lade_einsaetze_alle()
                 except Exception:
                     send_to(chat_id, "\u26a0\ufe0f Fehler beim Abruf der aktuellen Einsätze.")
                     continue
@@ -6007,6 +6365,11 @@ def main():
                 check_pegel_for_users(load_users())
             except Exception as pegel_err:
                 logger.debug(f"Pegel-Check Fehler: {pegel_err}")
+            # Pegel-Wache NÖ: Wasserstandsnachrichten des Landes NÖ (15-Minuten-Takt)
+            try:
+                check_pegel_noe_for_users(load_users())
+            except Exception as pegel_noe_err:
+                logger.debug(f"Pegel-NÖ-Check Fehler: {pegel_noe_err}")
             # Strom-Wache: Netz-OÖ-Störungen, die beobachtete Orte selbst betreffen (15-Minuten-Takt)
             try:
                 check_strom_for_users(load_users())
@@ -6045,11 +6408,13 @@ def main():
             # Wochenrückblick: sonntags 20:00 für User mit /wochen aktiv
             send_week_digests()
             html = fetch_ooelfv(SOURCE_URL)
-            einsaetze_all = parse_einsaetze_full(html)
+            oe_liste_live = parse_einsaetze_full(html)
             try:
-                _parser_canary(html, einsaetze_all)
+                _parser_canary(html, oe_liste_live)
             except Exception:
                 pass
+            # Einsätze: OÖ (OOELFV) + NÖ (Grisu/WASTL) in einer Liste
+            einsaetze_all = lade_einsaetze_alle(oe_liste_live)
 
             # Per-User Checks
             admin_offenhausen_active = False
