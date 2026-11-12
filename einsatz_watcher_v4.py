@@ -3751,6 +3751,12 @@ def check_selbstaktualisierung():
         _update_save_state(state)
         return
     logger.info(f"Selbstaktualisierung: {tag} verfügbar (läuft v{BOT_VERSION})")
+    # Wiederholungs-Sperre: diesen Tag hat diese Instanz bereits bedient
+    # (kein zweiter Download, kein zweiter Austausch, kein neuer Neustart-Zyklus)
+    if state.get("installiert_tag") == tag:
+        logger.info(f"Selbstaktualisierung: {tag} wurde bereits eingespielt — kein zweiter Versuch")
+        _update_save_state(state)
+        return
     if not AUTO_UPDATE:
         if state.get("gemeldet_tag") != tag and ADMIN_ID:
             send_to(ADMIN_ID, "⬆️ <b>Update verfügbar</b>\n"
@@ -3774,21 +3780,34 @@ def check_selbstaktualisierung():
         return
     ziel = _update_ziel_datei()
     try:
-        shutil.copyfile(ziel, ziel + ".bak-update-" + tag)
-        os.replace(staged, ziel)
-    except Exception as e:
-        logger.error(f"Selbstaktualisierung: Datei-Austausch fehlgeschlagen ({e})")
+        with open(ziel, "rb") as f:
+            aktuell_daten = f.read()
+    except OSError:
+        aktuell_daten = b""
+    if aktuell_daten == daten:
+        # Datei hat bereits den Tag-Inhalt (Neustart war evtl. nicht durchgekommen):
+        # KEIN Backup überschreiben, KEIN erneuter Austausch — nur Neustart auslösen
+        logger.info(f"Selbstaktualisierung: {tag} liegt bereits auf der aktiven Datei — nur Neustart")
+        state["installiert_tag"] = tag
         _update_save_state(state)
-        return
-    verlauf = "Neuerungen: siehe Release-Notizen"
-    if ADMIN_ID:
-        send_to(ADMIN_ID, "⬆️ <b>Update eingespielt</b>\n"
-                f"🆕 v{esc(BOT_VERSION)} → <b>{esc(tag)}</b>\n"
-                f"{verlauf}: {esc(url)}\n"
-                "🔄 Bot startet neu — gleich wieder online.")
-    state["gemeldet_tag"] = tag
-    _update_save_state(state)
-    logger.info(f"Selbstaktualisierung: Update auf {tag} eingespielt (Backup: {ziel}.bak-update-{tag})")
+    else:
+        try:
+            shutil.copyfile(ziel, ziel + ".bak-update-" + tag)
+            os.replace(staged, ziel)
+        except Exception as e:
+            logger.error(f"Selbstaktualisierung: Datei-Austausch fehlgeschlagen ({e})")
+            _update_save_state(state)
+            return
+        state["installiert_tag"] = tag
+        _update_save_state(state)
+        if ADMIN_ID:
+            send_to(ADMIN_ID, "⬆️ <b>Update eingespielt</b>\n"
+                    f"🆕 v{esc(BOT_VERSION)} → <b>{esc(tag)}</b>\n"
+                    "Neuerungen: siehe Release-Notizen — "
+                    f"{esc(url)}\n"
+                    "🔄 Bot startet neu — gleich wieder online.")
+        logger.info(f"Selbstaktualisierung: Update auf {tag} eingespielt (Backup: {ziel}.bak-update-{tag})")
+    # Neustart: einmal angestoßen gilt der Tag als bedient (installiert_tag-Sperre gegen Wiederholung)
     if UPDATE_RESTART_CMD:
         try:
             subprocess.run(UPDATE_RESTART_CMD, shell=True, timeout=30)
