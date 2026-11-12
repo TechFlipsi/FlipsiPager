@@ -1339,6 +1339,11 @@ def check_user_watches(chat_id, user_data, einsaetze_all, suppress=False):
                 betreff = "\U0001f514 <b>NEUER EINSATZ</b>"
             # Alarm für Wochenrückblick protokollieren
             log_alarm(e, chat_id)
+            # Medienbericht-Wache: Einsatz für die laumat.at-Nachsende-Suche anmelden
+            # (auch temporäre /einsatz-Watches; bei Restart-Suppress keine Anlage, sonst verlängert
+            # jeder Restart das Suchfenster endlos)
+            if not suppress:
+                _berichte_anmelden(e, chat_id)
             # Nachbar-Feuerwehr-Auto-Watch: zeige mit-alarmierte FWs die nicht dem beobachteten Ort entsprechen
             nachbar_block = ""
             if fw_count > 1:
@@ -3384,6 +3389,265 @@ def check_sirenen_ticker(users):
         state["ticker"] = ticker_state
         _save_sirenen_state(state)
         logger.info(f"Sirenen-Ticker: Signal '{sig['name']}' an {n} Nutzer")
+# ═══ Medienbericht-Wache (laumat.at) ═══
+# Nach einem Einsatz an einem beobachteten Ort (dauerhafte /ort-Beobachtung ODER
+# temporäre /einsatz-Watch) sucht der Bot auf der laumat.at-Bezirksseite nach dem
+# Medienbericht und sendet den Link an den Chat, sobald er veröffentlicht ist.
+# Regeln (Sir): Suchfenster BERICHTE_FENSTER_TAGE — kommt innerhalb kein Bericht,
+# hört der Bot still auf zu suchen (keine Meldung). Pro Einsatz max. EIN Bericht
+# je Chat (kein zweiter Link, auch wenn später ein weiterer Bericht erscheint).
+# Match hart: Ort im Titel UND im Artikeltext, Datum = Einsatztag, Uhrzeit ±30
+# Minuten (Laumat bekommt oft leicht andere Zeiten als der Einsatzzug).
+# Kein laumat-Bezirk für die Heimat (z. B. Linz-Stadt): keine Suche möglich.
+
+BERICHTE_FILE = os.path.join(STATE_DIR, "berichte_state.json")
+BERICHTE_PRUEF_MIN = 15        # Poll-Rhythmus der Wache (Minuten)
+BERICHTE_FENSTER_TAGE = 6      # Suchfenster nach Alarm (Vorgabe 4–7 Tage — Konstante frei einstellbar)
+BERICHTE_UHR_TOLERANZ_MIN = 30 # erlaubte Abweichung Laumat-Uhrzeit vs. Einsatz-Uhrzeit
+
+LAUMAT_UA = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36"
+# OOELFV-Bezirksname (kleingeschrieben) → laumat.at-Bezirk-Slug (Städte wie Linz-Stadt
+# haben keine laumat-Karte mit Berichten und bleiben außen vor)
+LAUMAT_BEZIRK_SLUGS = {
+    "braunau": "braunau", "eferding": "eferding", "freistadt": "freistadt",
+    "gmunden": "gmunden", "grieskirchen": "grieskirchen", "kirchdorf": "kirchdorf",
+    "linz-land": "linz-land", "perg": "perg", "ried im innkreis": "ried",
+    "rohrbach": "rohrbach", "schärding": "schaerding", "steyr-land": "steyr-land",
+    "urfahr-umgebung": "urfahr-umgebung", "vöcklabruck": "voecklabruck",
+    "wels-land": "wels-land",
+}
+LAUMAT_MONATE = {
+    "januar": 1, "februar": 2, "märz": 3, "april": 4, "mai": 5, "juni": 6,
+    "juli": 7, "august": 8, "september": 9, "oktober": 10, "november": 11, "dezember": 12,
+}
+_LAUMAT_MARKER_RX = re.compile(
+    r"L\.marker\(\[[^\]]*\],\s*\{icon:[^}]+\}\)\.addTo\(map\)\.bindPopup\("
+    r"'<b>(\d{2}\.\d{2}\.\d{4})</b>\s*<br\s*/?>\s*(.*?)<br\s*/?>\s*"
+    r"<a\s+href=\\'(https?://(?:www\.)?laumat\.at/medienbericht/\d+/)\\'",
+    re.S,
+)
+# Ereigniszeitpunkt im Berichttext: "am 10. November 2026 gegen 16:00 Uhr",
+# "am 10.11.2026 um 16:30 Uhr" oder ohne Uhrzeit "am 10. November"
+_LAUMAT_EREG_MONAT_UHR = re.compile(
+    r"am\s+(\d{1,2})\.\s*(januar|februar|märz|april|mai|juni|juli|august|september|oktober|november|dezember)\.?,?\s*(\d{4})?\s+(?:um|gegen)\s+(\d{1,2})[:.](\d{2})",
+    re.I,
+)
+_LAUMAT_EREG_NUMERIK_UHR = re.compile(
+    r"am\s+(\d{1,2})\.(\d{1,2})\.(\d{4})\s+(?:um|gegen)\s+(\d{1,2})[:.](\d{2})",
+    re.I,
+)
+_LAUMAT_EREG_MONAT_OHNE_UHR = re.compile(
+    r"am\s+(\d{1,2})\.\s*(januar|februar|märz|april|mai|juni|juli|august|september|oktober|november|dezember)\.?,?\s*(\d{4})?",
+    re.I,
+)
+
+
+def _berichte_load():
+    state = load_state(BERICHTE_FILE)
+    if not isinstance(state, dict):
+        state = {}
+    state.setdefault("queue", {})
+    state.setdefault("gesendet", {})
+    state.setdefault("last_check", 0)
+    return state
+
+
+def _berichte_save(state):
+    save_state(BERICHTE_FILE, state)
+
+
+def _laumat_fetch(url):
+    """Laumat-Seite holen — der Server schickt windows-1252, UTF-8-Versuch zuerst."""
+    req = urllib.request.Request(url, headers={"User-Agent": LAUMAT_UA})
+    with urllib.request.urlopen(req, timeout=20) as resp:
+        daten = resp.read()
+    try:
+        return daten.decode("utf-8")
+    except UnicodeDecodeError:
+        return daten.decode("windows-1252", errors="replace")
+
+
+def _laumat_marker_bezirk(slug):
+    """Berichte der laumat.at-Bezirkskarte: Liste {datum, titel, url} (dedup je URL)."""
+    try:
+        htm = _laumat_fetch("https://www.laumat.at/bezirk-%s,static,0.html" % slug)
+    except Exception:
+        logger.debug("Berichte-Wache: laumat-Bezirksseite nicht erreichbar (%s)", slug)
+        return []
+    ergebnis, gesehen = [], set()
+    for m in _LAUMAT_MARKER_RX.finditer(htm):
+        url = m.group(3)
+        if url in gesehen:
+            continue
+        gesehen.add(url)
+        titel = re.sub(r"<[^>]+>", "", m.group(2))
+        titel = unescape(titel).replace("\\'", "'")
+        ergebnis.append({"datum": m.group(1), "titel": re.sub(r"\s+", " ", titel).strip(), "url": url})
+    return ergebnis
+
+
+def _laumat_ereignis(url, ort_lower):
+    """Artikeltext holen und Ereignisdatum/-uhrzeit herauslesen.
+    Liefert dict mit datum ("TT.MM.JJJJ" oder "TT.MM."), uhr ("HH:MM" oder None)
+    und ort_im_text (letzte Sicherheitsbarriere gegen falsche Zuordnung)."""
+    try:
+        htm = _laumat_fetch(url)
+    except Exception:
+        return None
+    body = re.sub(r"<script.*?</script>", " ", htm, flags=re.S | re.I)
+    body = re.sub(r"<style.*?</style>", " ", body, flags=re.S | re.I)
+    body = re.sub(r"<[^>]+>", " ", body)
+    body = unescape(body)
+    body = re.sub(r"\s+", " ", body)
+    datum, uhr = None, None
+    mm = _LAUMAT_EREG_MONAT_UHR.search(body)
+    nm = _LAUMAT_EREG_NUMERIK_UHR.search(body) if mm is None else None
+    if mm:
+        monat = LAUMAT_MONATE.get(mm.group(2).lower(), 0)
+        if monat:
+            datum = "%02d.%02d.%s" % (int(mm.group(1)), monat, mm.group(3) or "")
+            uhr = "%02d:%02d" % (int(mm.group(4)), int(mm.group(5)))
+    elif nm:
+        datum = "%02d.%02d.%s" % (int(nm.group(1)), int(nm.group(2)), nm.group(3))
+        uhr = "%02d:%02d" % (int(nm.group(4)), int(nm.group(5)))
+    if not datum:
+        mo = _LAUMAT_EREG_MONAT_OHNE_UHR.search(body)
+        if mo:
+            jahr = mo.group(3) or ""
+            datum = "%02d.%02d.%s" % (int(mo.group(1)), LAUMAT_MONATE.get(mo.group(2).lower(), 0), jahr)
+            if datum.endswith(".0"):
+                datum = None
+    return {"datum": datum, "uhr": uhr, "ort_im_text": ort_lower in body.lower()}
+
+
+def _datum_gleich(a, b):
+    """Datum-Vergleich 'TT.MM.[JJJJ]': Tag+Monat müssen gleich sein, Jahr nur wenn beide es nennen."""
+    pa = (a or "").split(".")
+    pb = (b or "").split(".")
+    if len(pa) < 2 or len(pb) < 2:
+        return False
+    if pa[-1].strip() and pb[-1].strip() and pa[-1] != pb[-1]:
+        return False
+    return pa[0].strip() == pb[0].strip() and pa[1].strip() == pb[1].strip()
+
+
+def _uhr_abweichung(a, b):
+    """Minuten-Differenz zweier Uhrzeiten ("HH:MM"); über Mitternacht gewickelt."""
+    try:
+        ha, ma = a.split(":")
+        hb, mb = b.split(":")
+        d = abs((int(ha) * 60 + int(ma)) - (int(hb) * 60 + int(mb)))
+        return min(d, 1440 - d)
+    except (ValueError, AttributeError):
+        return None
+
+
+def _berichte_anmelden(e, chat_id):
+    """Neuer Einsatz an einem beobachteten Ort → in die Nachsende-Warteschlange.
+    Wird aus check_user_watches im NEU-Zweig gerufen (nicht bei Restart-Suppress)."""
+    ort = (e.get("ort") or "").strip()
+    bezirk = (e.get("bezirk") or "").strip()
+    slug = LAUMAT_BEZIRK_SLUGS.get(bezirk.lower()) if bezirk else None
+    if not slug or not ort:
+        if bezirk:
+            logger.debug(f"Berichte-Wache: kein laumat-Bezirk für '{bezirk}' ({ort}) — keine Suche")
+        return
+    key = f"{chat_id}|{einsatz_key(e)}"
+    zustand = _berichte_load()
+    if key in zustand.get("queue", {}) or key in zustand.get("gesendet", {}):
+        return
+    start = parse_zeit(e["feuerwehren"][0].get("start")) if e.get("feuerwehren") else None
+    if not start:
+        return
+    zustand.setdefault("queue", {})[key] = {
+        "ort": ort,
+        "bezirk": bezirk,
+        "typ": e.get("typ", ""),
+        "stichwort": e.get("stichwort", ""),
+        "start": start.strftime("%d.%m. %H:%M"),
+        "datum": start.strftime("%d.%m.%Y"),
+        "uhr": start.strftime("%H:%M"),
+        "verfall": time.time() + BERICHTE_FENSTER_TAGE * 86400,
+        "bezirk_slug": slug,
+    }
+    _berichte_save(zustand)
+    logger.info(f"Berichte-Wache: Einsatz {key} angemeldet (Suche {BERICHTE_FENSTER_TAGE} Tage nach Medienbericht)")
+
+
+def check_medienberichte(users):
+    """Medienbericht-Wache: sucht bei laumat.at den Bericht zu beobachteten Einsätzen
+    und sendet den Link, sobald er veröffentlicht ist (15-Minuten-Takt)."""
+    jetzt = time.time()
+    zustand = _berichte_load()
+    if jetzt - zustand.get("last_check", 0) < BERICHTE_PRUEF_MIN * 60:
+        return
+    zustand["last_check"] = jetzt
+    queue = zustand.get("queue", {})
+    # Fenster vorbei ohne Bericht → Eintrag still weg, keine Entwarnung, keine Meldung
+    for key in list(queue):
+        if jetzt > float(queue[key].get("verfall") or 0):
+            queue.pop(key)
+            logger.info(f"Berichte-Wache: {key} verfallen — kein Medienbericht im Suchfenster")
+    if not queue:
+        _berichte_save(zustand)
+        return
+    users_data = (users or {}).get("users", {})
+    # Eine Bezirksliste je betroffenem Bezirk pro Runde (nicht je Eintrag)
+    alle_marker = {}
+    for slug in sorted({eintrag.get("bezirk_slug") for eintrag in queue.values() if eintrag.get("bezirk_slug")}):
+        alle_marker[slug] = _laumat_marker_bezirk(slug)
+    for key, eintrag in list(queue.items()):
+        # Sir-Schutz in der Tiefe: bereits gesendet → Eintrag räumen, NIEMALS einen zweiten Link senden
+        if key in zustand.get("gesendet", {}):
+            queue.pop(key)
+            continue
+        chat_id = int(key.split("|", 1)[0])
+        ud = users_data.get(str(chat_id), {})
+        if users_data and (ud.get("silent") or _in_quiet_hours(ud.get("quiet_hours"))):
+            continue  # Eintrag bleibt liegen, Fenster läuft weiter
+        ort_lower = (eintrag.get("ort") or "").lower().strip()
+        start_dt = parse_zeit(eintrag.get("start"))
+        if not ort_lower or not start_dt:
+            queue.pop(key)
+            continue
+        marker = alle_marker.get(eintrag.get("bezirk_slug")) or []
+        kandidaten = [mk for mk in marker if ort_lower in mk["titel"].lower()]
+        treffer = None
+        for delta_tage in (0, 1, 2):
+            for mk in kandidaten:
+                artikel = _laumat_ereignis(mk["url"], ort_lower)
+                if not artikel or not artikel.get("ort_im_text"):
+                    continue
+                # Datum hart: Artikel-Ereignisdatum, wenn lesbar — sonst Karten-Marker nur am Einsatztag selbst
+                hart = artikel.get("datum") or (mk["datum"] if delta_tage == 0 else None)
+                if not hart or not _datum_gleich(hart, eintrag.get("datum")):
+                    continue
+                ber_uhr = artikel.get("uhr")
+                if ber_uhr:
+                    abw = _uhr_abweichung(ber_uhr, eintrag.get("uhr"))
+                    if abw is None or abw > BERICHTE_UHR_TOLERANZ_MIN:
+                        continue
+                treffer = mk
+                break
+            if treffer:
+                break
+        if treffer:
+            msg = (
+                "📰 <b>Medienbericht zum Einsatz</b>\n"
+                f"🚨 {esc(eintrag.get('typ', ''))} {esc(eintrag.get('stichwort', ''))}\n"
+                f"📍 {esc(eintrag.get('ort', ''))} ({esc(eintrag.get('bezirk', ''))})\n"
+                f"⏰ Einsatz: {esc(eintrag.get('uhr', ''))} Uhr\n"
+                f"🔗 {treffer['url']}"
+            )
+            kb = {"inline_keyboard": [[{"text": "📰 Bericht öffnen", "url": treffer["url"]}]]}
+            if send_to(chat_id, msg, reply_markup=kb):
+                zustand.setdefault("gesendet", {})[key] = treffer["url"]
+                queue.pop(key)
+                logger.info(f"Berichte-Wache: Medienbericht nachgesendet an {chat_id} ({eintrag.get('ort')})")
+            # Send-Fehler: Eintrag bleibt in der Queue und wird in der nächsten Runde erneut versucht
+    _berichte_save(zustand)
+
+
 # ═══ /testalarm ═══
 def send_testalarm(chat_id):
     """Simulierter Probe-Alarm: prüft die Alarm-Zustellung, ohne echten Einsatz zu brauchen."""
@@ -5593,6 +5857,11 @@ def main():
                 check_sirenen_ticker(load_users())
             except Exception as sir_t_err:
                 logger.debug(f"Sirenen-Ticker Fehler: {sir_t_err}")
+            # Medienbericht-Wache: laumat.at-Nachsendung zu beobachteten Einsätzen (15-Minuten-Takt)
+            try:
+                check_medienberichte(load_users())
+            except Exception as ber_w_err:
+                logger.debug(f"Berichte-Wache Fehler: {ber_w_err}")
             # Wochenrückblick: sonntags 20:00 für User mit /wochen aktiv
             send_week_digests()
             html = fetch_ooelfv(SOURCE_URL)
