@@ -114,7 +114,7 @@ MAX_USERS = _FW_CFG["max_users"]
 # prüft zyklisch das neuste FlipsiPager-Release und installiert es selbst
 # (systemd Restart=always bzw. Docker restart: unless-stopped holen den
 # Prozess nach dem Beenden mit der neuen Version zurück).
-BOT_VERSION = "1.2.2"
+BOT_VERSION = "1.4.1"
 UPDATE_REPO = "TechFlipsi/FlipsiPager"
 AUTO_UPDATE = str(_FW_CFG.get("update_auto", "1")).strip() == "1"
 UPDATE_HOURS = int(_FW_CFG.get("update_stunden", 12))
@@ -4176,7 +4176,7 @@ def _fwat_artikel_liste(seiten=2):
                 htm = resp.read().decode("utf-8", errors="replace")
         except Exception:
             continue
-        for m in re.finditer(r'<a href="(https://www\.feuerwehren\.at/berichte/[a-z0-9-]+/\d{4}/\d{1,2}/[^"]+)"[^>]*title="([^"]+)"', htm):
+        for m in re.finditer(r'<a\s+href="(https://www\.feuerwehren\.at/berichte/[a-z0-9-]+/\d{1,4}/\d{1,2}/[^"]+)"[^>]*>\s*<picture[^>]*title="([^"]+)"', htm):
             url_artikel, titel = m.group(1), unescape(m.group(2)).strip()
             if url_artikel in gesehen:
                 continue
