@@ -649,7 +649,7 @@ def setup_telegram_commands():
         {"command": "hilfe", "description": "Alle Befehle im Überblick"},
         {"command": "anleitung", "description": "Wie funktioniert der Bot?"},
         {"command": "datenschutz", "description": "Welche Daten speichert der Bot?"},
-        {"command": "lage", "description": "Aktuelle Einsätze in Oberösterreich"},
+        {"command": "lage", "description": "Aktuelle Einsätze (OÖ/NÖ je Beobachtung)"},
         {"command": "wetterwarnung", "description": "Wetter-Warnungen abfragen (Regen/Wind/Gewitter/Schnee)"},
         {"command": "ort", "description": "Ort dauerhaft beobachten"},
         {"command": "unort", "description": "Dauerhafte Beobachtung entfernen"},
@@ -679,9 +679,9 @@ def setup_telegram_commands():
         {"command": "vergessen", "description": "Meinen Zugang komplett löschen (DSGVO, 2-Stufen)"},
         {"command": "testalarm", "description": "Probealarm prüfen, ob Alarme ankommen"},
         {"command": "pegel", "description": "Wasserstände rund um deine Orte"},
-        {"command": "strom", "description": "⚡ Stromausfälle im Bezirk (Netz OÖ)"},
+        {"command": "strom", "description": "⚡ Stromausfälle bei deinen Orten (Netz OÖ + NÖ)"},
         {"command": "waldbrand", "description": "Waldbrand-Gefährdung an deinen Orten"},
-        {"command": "lawine", "description": "Lawinenlage OÖ — mit Ort: /lawine Gosau"},
+        {"command": "lawine", "description": "Lawinenlage OÖ/NÖ — mit Ort: /lawine Gosau"},
         {"command": "sirene", "description": "Nächster Sirenenprobe-Termin (Zivilschutz-Probealarm)"},
         {"command": "rueckblick", "description": "Dein persönlicher Einsatzrückblick"},
         {"command": "stimme", "description": "Sprachnachricht-Alarm ein-/ausschalten"},
@@ -1798,7 +1798,7 @@ def datenschutz_text():
         "Orte zustellen zu k\u00f6nnen — inklusive Unwetter-, Pegel-, Strom-, Waldbrand- und Lawinen-Wachen "
         "sowie der j\u00e4hrlichen Sirenenprobe-Erinnerung, Sprachalarmen und pers\u00f6nlichen R\u00fcckblicken, "
         "sofern du die Funktionen nutzt. "
-        "Die Wachen fragen \u00f6ffentliche Quellen (Hydro O\u00d6, Netz O\u00d6, GeoSphere, Lawinenwarndienst) "
+        "Die Wachen fragen \u00f6ffentliche Quellen (Hydro O\u00d6, Wasserstand N\u00d6, Netz O\u00d6, Netz N\u00d6, GeoSphere, Lawinenwarndienste O\u00d6/N\u00d6, Laumat/feuerwehren.at) "
         "ab \u2014 es geht KEINE deiner Daten an diese Dienste. Keine Analyse, kein "
         "Tracking, kein Profiling, kein Verkauf, keine Weitergabe, keine Werbung. Der Bot kennt "
         "keine E-Mail-Adresse, keine Telefonnummer und keinen echten Namen \u2014 nur was du hier "
@@ -1915,10 +1915,10 @@ def anleitung_text():
         "kommen mit 📍-Karte und 🧭-Navigation — bei beendeten temporären Beobachtungen zusätzlich "
         "der ⭐-Button, um den Ort dauerhaft zu behalten.\n\n"
         "🌊 <b>Hochwasser-Wache inklusive:</b> Rund um deine beobachteten Orte werden automatisch "
-        "Pegel des Hydrographischen Dienstes OÖ im 20-km-Umkreis überwacht (alle 15 Minuten). "
+        "Pegel des Hydro OÖ und der Wasserstandsnachrichten des Landes NÖ im 20-km-Umkreis überwacht (alle 15 Minuten). "
         "Steht ein Pegel auf Alarmstufe, kriegst du sofort eine Meldung — und eine Entwarnung, wenn "
         "sich alles beruhigt. Details anytime mit /pegel.\n\n"
-        "⚡ <b>Strom-Wache inklusive:</b> Die Störungskarte des Netzbetreibers (Netz OÖ) wird automatisch "
+        "⚡ <b>Strom-Wache inklusive:</b> Die Störungskarten der Netzbetreiber (Netz OÖ + Netz NÖ) werden automatisch "
         "für deine Orte selbst überwacht (Gemeinde/Umkreis, nicht der ganze Bezirk) — bei Ausfällen "
         "kriegst du sofort Bescheid, mit Entwarnung. Abfragen mit /strom.\n\n"
         "📰 <b>Medienbericht-Wache inklusive:</b> Nach einem Einsatz an deinen beobachteten Orten sucht der "
@@ -1928,7 +1928,7 @@ def anleitung_text():
         "🔥 <b>Waldbrand-Wache inklusive:</b> Aus offiziellen GeoSphere-Wetterdaten wird alle 3 Stunden eine "
         "Gefährdungseinschätzung an deinen Orten berechnet (Trockenheit, Wind, Regen — inkl. echten "
         "Regen-Messwerten der letzten 24 h). Abfragen mit /waldbrand.\n\n"
-        "❄️ <b>Lawinen-Wache:</b> /lawine zeigt die Lage für ganz OÖ, /lawine <Ort> (z. B. /lawine Gosau) "
+        "❄️ <b>Lawinen-Wache:</b> /lawine zeigt die Lage für OÖ und die NÖ-Gebirgszonen, /lawine <Ort> (z. B. /lawine Gosau) "
         "sagt dir die Gefahr am Berg für einen bestimmten Ort. Automatisch kriegst du eine Lawinenwarnung "
         "NUR, wenn einer deiner beobachteten Orte in einer Lawinen-Zone liegt und dort Stufe 3 (erheblich) "
         "oder mehr gilt. Nur im Winterhalbjahr aktiv.\n\n"
@@ -4528,10 +4528,10 @@ def help_text(user_data, is_admin):
         f"/vergessen — Kompletten Zugang löschen (Bestätigung + 2 Wochen Bedenkzeit + letzte Nachfrage)\n"
         f"/testalarm — Probealarm: prüft ob Alarme bei dir ankommen\n"
         f"/pegel — Wasserstände der Pegel im Umkreis deiner Orte (Hochwasser-Wache)\n"
-        f"/strom — Stromausfälle bei deinen Orten selbst (Netz OÖ, Umkreis-Prüfung)\n"
+        f"/strom — Stromausfälle bei deinen Orten selbst (Netz OÖ + NÖ, Umkreis-Prüfung)\n"
         f"/waldbrand — Waldbrand-Gefährdung an deinen Orten (Wetter-Abschätzung)\n"
-        f"/lawine — Lawinenlagebericht für ganz OÖ (Totes Gebirge, Dachstein, Sengsengebirge …)\n"
-        f"/lawine <Ort> — Gefahr am Berg für EINEN Ort (z. B. /lawine Gosau)\n"
+        f"/lawine — Lawinenlage OÖ + NÖ (Totes Gebirge, Dachstein … / Rax-Schneeberg, Ybbstaler Alpen …); Suffix: /lawine nö bzw. /lawine oö\n"
+        f"/lawine <Ort> — Gefahr am Berg für EINEN Ort (z. B. /lawine Gosau) — kennt NÖ-Gebirgszonen\n"
         f"      ❄️ Automatische Warnung NUR wenn dein beobachteter Ort in einer Lawinen-Zone liegt\n"        f"/sirene — Nächster Sirenenprobe-Termin (Zivilschutz-Probealarm, 1× jährlich)\n"
         f"/rueckblick — Dein persönlicher Einsatzrückblick (optional: /rueckblick 6 für 6 Monate)\n"
         f"/stimme — Sprachnachricht-Alarm ein/aus (Alarm zusätzlich am Ohr)\n"
