@@ -22,6 +22,12 @@ curl -fsSL https://raw.githubusercontent.com/TechFlipsi/FlipsiPager/main/install
 
 Der Einrichtungsassistent fragt alles ab (Feuerwehr-Name, Bot-Token, Admin-ID — vieles wird automatisch erkannt) und richtet einen systemd-Dienst ein. **Komplette Anleitung mit allen Details:** [docs/ANLEITUNG.md](docs/ANLEITUNG.md)
 
+**Entfernen** (Daten bleiben standardmäßig erhalten, `--purge` löscht auch sie):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/TechFlipsi/FlipsiPager/main/install.sh | bash -s -- uninstall
+```
+
 ## ✨ Funktionen
 
 - 🔥 **Live-Einsatz-Alarm** für frei wählbare Orte in OÖ und NÖ (OOELFV + WASTL/Landeswarnzentrale NÖ)

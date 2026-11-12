@@ -148,6 +148,22 @@ sudo systemctl disable --now feuerwehr-monitor  # Autostart aus
 
 ## 🗑️ Deinstallation
 
+**Einzeiler** (dieselbe install.sh, Uninstall-Modus — fragt nichts, löscht nichts ohne deine Absicht):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/TechFlipsi/FlipsiPager/main/install.sh | bash -s -- uninstall
+```
+
+Das stoppt und entfernt den Dienst + das Programm-Verzeichnis. Deine Daten (`~/.config/fw_bot`: Nützer, Beobachtungen, Token) **bleiben standardmäßig erhalten** — Wiedereinsetzen später übernimmt sie automatisch.
+
+Alles restlos löschen (auch die Daten) mit `--purge`:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/TechFlipsi/FlipsiPager/main/install.sh | bash -s -- uninstall --purge
+```
+
+Manuell (falls du die Befehle einzeln sehen willst):
+
 ```bash
 sudo systemctl disable --now feuerwehr-monitor
 sudo rm /etc/systemd/system/feuerwehr-monitor.service

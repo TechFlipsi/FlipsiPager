@@ -25,6 +25,28 @@ echo "einen systemd-Dienst ein. Es fragt vorher alles ab — nichts wird"
 echo "ohne deine Eingabe geändert. Abbruch jederzeit mit Strg+C."
 echo
 
+# ── Uninstall-Modus (restlose Entfernung, Daten standardmäßig BEHALTEN) ──
+if [ "${1:-}" = "uninstall" ]; then
+    echo -e "${B}🗑FlipsiPager — Deinstallation${N}"
+    SUDO=""
+    if command -v sudo >/dev/null 2>&1; then SUDO="sudo"; fi
+    echo "─────────────────────────────────────────────"
+    $SUDO systemctl disable --now "$SERVICE_NAME" 2>/dev/null || true
+    $SUDO rm -f "$SERVICE_FILE"
+    $SUDO systemctl daemon-reload 2>/dev/null || true
+    rm -rf "$SCRIPT_PATH" "$HOME/feuerwehr-monitor"
+    echo "✅ Dienst und Programm entfernt ($SERVICE_NAME, ~/feuerwehr-monitor)."
+    if [ "${2:-}" = "--purge" ]; then
+        rm -rf "$FW_DIR"
+        echo "🗑️ Nutzerdaten gelöscht: $FW_DIR"
+    else
+        echo "💾 Nutzerdaten BEHALTEN: $FW_DIR (token, users.json, Beobachtungen)."
+        echo "   Restlos entfernen:   bash install.sh uninstall --purge"
+        echo "   Wiedereinsetzen:     gleiche Befehls-Kette wie bei der Installation (Altdaten werden übernommen)."
+    fi
+    exit 0
+fi
+
 # ── Root-Check für systemd (sudo wird nur für Service-Datei gebraucht) ──
 if [ "$(id -u)" -eq 0 ]; then
     die "Bitte NICHT als root ausführen (der Bot soll unter deinem Benutzer laufen). Verwende: bash install.sh"
