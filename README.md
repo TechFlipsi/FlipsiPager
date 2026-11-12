@@ -6,7 +6,7 @@
 [![Sprache](https://img.shields.io/badge/Sprache-Deutsch-green.svg)](docs/ANLEITUNG.md)
 [![Stars](https://img.shields.io/github/stars/TechFlipsi/FlipsiPager?style=social)](https://github.com/TechFlipsi/FlipsiPager/stargazers)
 
-Ein **selbst hostbarer** Telegram-Bot für Feuerwehr-Einsätze in **Oberösterreich** — auf deiner eigenen Hardware. Alarm bei Einsätzen an deinen beobachteten Orten, inklusive Unwetter-Warnungen, Pegel-Überwachung, Stromausfall-Wache, Lawinenlage, automatischer Medienbericht-Nachsendung, Sprachalarm und vielem mehr.
+Ein **selbst hostbarer** Telegram-Bot für Feuerwehr-Einsätze in **Oberösterreich und Niederösterreich** — auf deiner eigenen Hardware. Alarm bei Einsätzen an deinen beobachteten Orten, inklusive Unwetter-Warnungen, Pegel-Überwachung, Stromausfall-Wache, Lawinenlage, automatischer Medienbericht-Nachsendung, Sprachalarm und vielem mehr.
 
 Keine Cloud, kein Abo, keine Registrierung außer Telegram selbst — **deine Daten bleiben auf deinem Gerät.**
 
@@ -24,14 +24,14 @@ Der Einrichtungsassistent fragt alles ab (Feuerwehr-Name, Bot-Token, Admin-ID �
 
 ## ✨ Funktionen
 
-- 🔥 **Live-Einsatz-Alarm** für frei wählbare Orte (OOELFV)
+- 🔥 **Live-Einsatz-Alarm** für frei wählbare Orte in OÖ und NÖ (OOELFV + WASTL/Landeswarnzentrale NÖ)
 - ⛈️ **Amtliche Unwetter-Warnungen** (GeoSphere Austria) inklusive
-- 🌊 **Hochwasser-Wache** — Pegel im Umkreis deiner Orte (Hydro OÖ)
-- ⚡ **Stromausfall-Wache** — Störungskarte Netz OÖ
-- 📰 **Medienbericht-Wache** — nach dem Einsatz sucht der Bot für deine Orte den laumat.at-Medienbericht
-  und sendet den Link automatisch, sobald er veröffentlicht wird (Ort + Datum + Uhrzeit ±30 Minuten
-  verriegelt, maximal ein Bericht je Einsatz und Chat)
-- ❄️ **Lawinen-Wache** — Lawinenlagebericht + Zonen-Warnung
+- 🌊 **Hochwasser-Wache** — Pegel im Umkreis deiner Orte (Hydro OÖ + Wasserstandsnachrichten NÖ)
+- ⚡ **Stromausfall-Wache** — Netz OÖ + Netz NÖ (echte Störungen + geplante Abschaltungen)
+- 📰 **Medienbericht-Wache** — nach dem Einsatz sucht der Bot den Medienbericht für deine Orte
+  (laumat.at für OÖ, feuerwehren.at für NÖ) und sendet den Link automatisch, sobald er veröffentlicht
+  wird (Ort + Datum + Uhrzeit ±30 Minuten verriegelt, maximal ein Bericht je Einsatz und Chat)
+- ❄️ **Lawinen-Wache** — Lawinenlagebericht + Zonen-Warnung für die Gebirgsregionen OÖ und NÖ
 - 🔄 **Selbstaktualisierung** — installiert neue GitHub-Releases selbst, sichert die alte Datei als Backup, meldet dem Admin „Update eingespielt" (abschaltbar)
 - 🗣️ **Sprachalarm** — Alarme zusätzlich als Sprachnachricht (optional)
 - 📱 **Inline-Buttons** mit Karte & Navigation bei jedem Einsatz
@@ -84,7 +84,7 @@ Fehlt die Datei, läuft der Bot mit Standard-Werten (Poll 5 s) — für Heimat-I
 
 - **Kein Cloud-Zwang:** Läuft komplett auf deiner Hardware, offline-fähig außer den Datenquellen selbst
 - **Bewährtes Multi-User-System:** Offene Registrierung, Limits, Auto-Ban, Zwei-Stufen-Löschung — seit Monaten produktiv im Einsatz
-- **Fünf Wachen in einem:** Einsatz, Unwetter, Pegel, Stromausfall, Medienberichte — keine fünf Apps, ein Bot
+- **Wachen in einem:** Einsätze (OÖ+NÖ), Unwetter, Pegel, Strom, Lawinen, Medienberichte — eine Instanz, ein Bot
 - **Sprachalarm:** Der Bot ruft den Alarm zusätzlich am Ohr aus (lokale Spracherzeugung, keine Cloud-TTS)
 
 ## ⚠️ Rechtliches & Verlässlichkeit
