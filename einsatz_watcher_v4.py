@@ -3198,16 +3198,16 @@ def waldbrand_text_fuer_orte(orte):
 
 # ═══ Bergwacht/Lawinen-Abfrage (/lawine — Lawinenwarndienst OÖ AT-04) ═══
 LAWINEN_BASE = "https://static.lawinen-warnung.eu/bulletins"
-LAWINEN_REGION = "AT-04"  # OÖ (Totes Gebirge, Pyhrgas, Dachstein, Sengsengebirge …)
+LAWINEN_REGION_MAP = {"OÖ": "AT-04", "NÖ": "AT-03"}  # AT-04 = OÖ (Totes Gebirge, Dachstein …), AT-03 = NÖ-Lawinenwarndienst (Ybbstaler, Rax-Schneeberg, Gippel-Göller …)
 
-def lawine_status(tage_zurueck=1):
-    """Aktuelles OÖ-Lawinenbulletin (CAAML). Saison aus (Dez–Apr) → Hinweis."""
+def lawine_status(tage_zurueck=1, region="AT-04"):
+    """Aktuelles Lawinenbulletin (CAAML) der Region. Saison aus (Dez–Apr) → Hinweis."""
     from datetime import timedelta as _td
     for offset in range(0, tage_zurueck + 1):
         # Bulletin-Pfade nach Lokaldatum (Europe/Vienna) bilden — utcnow hätte nachts
         # (bis ~01/02 Uhr) das Vortags-Datum und fände den frischen Morgen-Bericht nicht.
         tag = (datetime.now() - _td(days=offset)).strftime("%Y-%m-%d")
-        u = f"{LAWINEN_BASE}/{tag}/{tag}_{LAWINEN_REGION}_de_CAAMLv6.json"
+        u = f"{LAWINEN_BASE}/{tag}/{tag}_{region}_de_CAAMLv6.json"
         try:
             r = urllib.request.urlopen(urllib.request.Request(u, headers={"User-Agent": UA_NOMINATIM}), timeout=20)
             d = json.loads(r.read().decode())
@@ -3220,25 +3220,33 @@ def lawine_status(tage_zurueck=1):
             break
     return None, None
 
-def lawine_text():
-    tag, d = lawine_status(2)
-    if not d:
-        return ("\u2744\ufe0f <b>Lawinenlagebericht O\u00d6</b>\n"
-                "Aktuell keine Berichte — der O\u00d6-Lawinenwarndienst berichtet nur im Winterhalbjahr (ca. Dezember bis April).")
-    zeilen = [f"\u2744\ufe0f <b>Lawinenlage O\u00d6</b> \u2014 Bericht vom {esc(tag)}"]
-    for b in d.get("bulletins", []):
-        stufe = "?"
-        for dr in b.get("dangerRatings", []):
-            stufe = str(dr.get("mainValue", "?"))
-        stufe_de = {"low": "1 \u2014 gering", "moderate": "2 \u2014 m\u00e4\u00dfig",
-                    "considerable": "3 \u2014 erheblich", "high": "4 \u2014 gro\u00df", "very_high": "5 \u2014 sehr gro\u00df"}.get(stufe, stufe)
-        icon = "\U0001f7e2" if stufe == "low" else ("\U0001f7e1" if stufe == "moderate" else "\U0001f534")
-        regs = ", ".join(str(x.get("name")) for x in b.get("regions", []) if x.get("name"))
-        if regs:
-            zeilen.append(f"{icon} <b>{esc(regs)}</b>: Stufe {stufe_de}")
-    zeilen.append("")
-    zeilen.append("\u26a0\ufe0f Stufen \u00e4ndern sich \u00fcber H\u00f6henlagen \u2014 Details im Bericht: https://lawinen.report/")
-    return "\n".join(zeilen)
+def lawine_text(regionen=("AT-04",)):
+    """"Lawinenlage-Nachricht für eine oder mehrere Regionen (OÖ = AT-04, NÖ = AT-03)."""
+    teile, leere = [], []
+    for region in regionen:
+        land = "OÖ" if region == "AT-04" else ("NÖ" if region == "AT-03" else region)
+        tag, d = lawine_status(2, region)
+        if not d:
+            leere.append(f"{land}: aktuell kein Bericht (der Warndienst berichtet nur im Winterhalbjahr, ca. Dezember bis April).")
+            continue
+        zeilen = [f"❄️ <b>Lawinenlage {land}</b> — Bericht vom {esc(tag)}"]
+        for b in d:
+            stufe = "?"
+            for dr in b.get("dangerRatings", []):
+                stufe = str(dr.get("mainValue", "?"))
+            stufe_de = {"low": "1 — gering", "moderate": "2 — mäßig",
+                        "considerable": "3 — erheblich", "high": "4 — groß", "very_high": "5 — sehr groß"}.get(stufe, stufe)
+            icon = "🟢" if stufe == "low" else ("🟡" if stufe == "moderate" else "🔴")
+            regs = ", ".join(str(x.get("name")) for x in b.get("regions", []) if x.get("name"))
+            if regs:
+                zeilen.append(f"{icon} <b>{esc(regs)}</b>: Stufe {stufe_de}")
+        zeilen.append("⚠️ Stufen ändern sich über Höhenlagen — Details: https://lawinen.report/")
+        teile.append("\n".join(zeilen))
+    if not teile:
+        return "❄️ Aktuell keine Lawinenberichte (Winterhalbjahr ca. Dezember– April) — " + " ".join(leere)
+    teile.append("ℹ️ " + " ".join(leere) if leere else "")
+    text = "\n\n".join(t.strip() for t in teile if t and t.strip())
+    return text
 
 
 LAWINEN_CHECK_INTERVAL_H = 6
@@ -3281,6 +3289,13 @@ LAWINEN_REGION_ZENTREN = {
     "AT-04-06": {"name": "Sengsengebirge", "lat": 47.72, "lon": 14.35, "km": 15},
     "AT-04-07": {"name": "Zimnitzmassiv, Höllengebirge", "lat": 47.72, "lon": 13.75, "km": 15},
     "AT-04-08": {"name": "Traunstein, Eibenberg", "lat": 47.79, "lon": 13.80, "km": 12},
+    # NÖ-Zonen (Lawinenwarndienst NÖ, Plattform-Region AT-03):
+    "AT-03-01": {"name": "Ybbstaler Alpen", "lat": 47.80, "lon": 15.10, "km": 20},
+    "AT-03-02": {"name": "Türnitzer Alpen", "lat": 47.90, "lon": 15.45, "km": 15},
+    "AT-03-03": {"name": "Gutensteiner Alpen", "lat": 47.93, "lon": 15.80, "km": 15},
+    "AT-03-04": {"name": "Rax-Schneeberggebiet", "lat": 47.72, "lon": 15.75, "km": 15},
+    "AT-03-05": {"name": "Semmering-Wechselgebiet", "lat": 47.65, "lon": 15.85, "km": 15},
+    "AT-03-06": {"name": "Gippel-Göllergebiet", "lat": 47.85, "lon": 15.65, "km": 15},
 }
 # Fallback-Order wenn regionID fehlt (Name-basiert):
 LAWINEN_NAME_ZENTREN = {
@@ -3305,12 +3320,14 @@ def check_lawinen_for_users(users):
     if now - state.get("last_check", 0) < LAWINEN_CHECK_INTERVAL_H * 3600:
         return
     state["last_check"] = now
-    tag, d = lawine_status(1)
+    ooe_tag, ooe_b = lawine_status(1, LAWINEN_REGION_MAP["OÖ"])
+    noe_tag, noe_b = lawine_status(1, LAWINEN_REGION_MAP["NÖ"])
+    d = (ooe_b or []) + (noe_b or [])
     if not d:
         state["bericht"] = None
         _save_lawinen_state(state)
         return
-    # Region → max Stufe je Bulletin-Gruppe:
+    # Region → max Stufe je Bulletin-Gruppe (OÖ + NÖ):
     region_stufen = {}
     for b in d:
         order = {"low": 1, "moderate": 2, "considerable": 3, "high": 4, "very_high": 5}
@@ -3323,7 +3340,7 @@ def check_lawinen_for_users(users):
             rid = r.get("regionID") or LAWINEN_NAME_ZENTREN.get(str(r.get("name", "")).lower().strip())
             if rid:
                 region_stufen[rid] = max(region_stufen.get(rid, 0), stufe_b)
-    state["bericht"] = {"tag": tag, "region_stufen": region_stufen}
+    state["bericht"] = {"tag": max(ooe_tag or "", noe_tag or ""), "region_stufen": region_stufen}
     gesendet = 0
     stufe_de = {3: "erheblich", 4: "gro\u00df", 5: "sehr gro\u00df"}
     gemeldet = set(state.get("gemeldet", []))
@@ -3370,14 +3387,14 @@ def check_lawinen_for_users(users):
                 continue
             stufe = region_stufen.get(rid, 0)
             if stufe >= 3:
-                token = f"{tag}:{rid}:{stufe}"
+                token = f"{max(ooe_tag or '', noe_tag or '')}:{rid}:{stufe}"
                 if token in gemeldet:
                     continue
                 gemeldet.add(token)
                 z = LAWINEN_REGION_ZENTREN[rid]
                 icon = "\U0001f534" if stufe >= 4 else "\u26a0\ufe0f"
                 txt = (f"{icon} <b>Lawinenwarnung — {esc(z['name'])}</b>\n"
-                       f"Gefahrenstufe {stufe} ({stufe_de.get(stufe, '?')}) \u2014 Bericht vom {esc(tag)}\n"
+                       f"Gefahrenstufe {stufe} ({stufe_de.get(stufe, '?')}) \u2014 Bericht vom {esc((noe_tag or '') if rid.startswith('AT-03') else (ooe_tag or ''))}\n"
                        f"Betrifft deine beobachtete Zone: {esc(ort.title())}\n"
                        f"Details: https://lawinen.report/")
                 send_to(cid, txt)
@@ -4902,10 +4919,19 @@ def handle_bot_commands():
             elif text == "/lawine" or text.startswith("/lawine "):
                 try:
                     arg = text[len("/lawine"):].strip()
-                    if arg:
+                    arg_up = arg.upper().replace("NOE", "NÖ").replace("OOE", "OÖ") if len(arg) <= 3 else ""
+                    if arg_up in ("NÖ", "OÖ"):
+                        send_to(chat_id, lawine_text((LAWINEN_REGION_MAP[arg_up],)))
+                    elif arg:
                         send_to(chat_id, lawine_text_ort(arg))
                     else:
-                        send_to(chat_id, lawine_text())
+                        standard_lw = user_standard_quelle(user_data)
+                        if standard_lw == "NÖ":
+                            send_to(chat_id, lawine_text(("AT-03",)))
+                        elif standard_lw == "BOTH":
+                            send_to(chat_id, lawine_text(("AT-04", "AT-03")))
+                        else:
+                            send_to(chat_id, lawine_text(("AT-04",)))
                 except Exception as lw_err:
                     logger.error(f"/lawine Fehler: {lw_err}")
                     send_to(chat_id, "\u26d4 Lawinenbericht gerade nicht erreichbar.")
