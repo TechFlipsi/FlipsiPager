@@ -4493,7 +4493,7 @@ def help_text(user_data, is_admin):
         f"\n\U0001f6a8 <b>Einsätze ansehen</b>\n"
         f"\U0001f680 /start — Bot aktivieren / Begrüßung\n"
         f"/anleitung — Wie funktioniert der Bot? (Daten, Regeln, Limits)\n"
-        f"/lage — Alle laufenden Einsätze in Oberösterreich (mit 📍-Karte &amp; ⏱️-Beobachten-Buttons je Einsatz)\n"
+        f"/lage — Laufende Einsätze (Standard: dein Bundesland je Beobachtung; /lage oö bzw. /lage nö wählt explizit) mit 📍-Karte &amp; ⏱️-Buttons je Einsatz\n"
         f"/wetterwarnung [Ort] — Aktive amtliche Wetter-Warnungen (GeoSphere Austria): Regen, Wind, Gewitter, Schnee, Hitze — klar vom Feuerwehr-Einsatz getrennt; ohne Ort: für deine beobachteten Orte\n"
         f"/offenhausen — Letzte Einsätze der Heimat-Feuerwehr ({FF_NAME})\n"
         f"/heute — Einsätze von heute für deine Orte\n"
