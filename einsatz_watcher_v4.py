@@ -3915,9 +3915,10 @@ def _berichte_anmelden(e, chat_id):
     ort = (e.get("ort") or "").strip()
     bezirk = (e.get("bezirk") or "").strip()
     slug = LAUMAT_BEZIRK_SLUGS.get(bezirk.lower()) if bezirk else None
-    if not slug or not ort:
-        if bezirk:
-            logger.debug(f"Berichte-Wache: kein laumat-Bezirk für '{bezirk}' ({ort}) — keine Suche")
+    if not ort:
+        return
+    if not slug and not bezirk.startswith("BAZ "):
+        logger.debug(f"Berichte-Wache: keine Berichtsquelle für '{bezirk}' ({ort}) — keine Suche")
         return
     key = f"{chat_id}|{einsatz_key(e)}"
     zustand = _berichte_load()
@@ -3977,27 +3978,30 @@ def check_medienberichte(users):
         if not ort_lower or not start_dt:
             queue.pop(key)
             continue
-        marker = alle_marker.get(eintrag.get("bezirk_slug")) or []
-        kandidaten = [mk for mk in marker if ort_lower in mk["titel"].lower()]
         treffer = None
-        for delta_tage in (0, 1, 2):
-            for mk in kandidaten:
-                artikel = _laumat_ereignis(mk["url"], ort_lower)
-                if not artikel or not artikel.get("ort_im_text"):
-                    continue
-                # Datum hart: Artikel-Ereignisdatum, wenn lesbar — sonst Karten-Marker nur am Einsatztag selbst
-                hart = artikel.get("datum") or (mk["datum"] if delta_tage == 0 else None)
-                if not hart or not _datum_gleich(hart, eintrag.get("datum")):
-                    continue
-                ber_uhr = artikel.get("uhr")
-                if ber_uhr:
-                    abw = _uhr_abweichung(ber_uhr, eintrag.get("uhr"))
-                    if abw is None or abw > BERICHTE_UHR_TOLERANZ_MIN:
+        if alle_marker.get(eintrag.get("bezirk_slug")) is not None:
+            marker = alle_marker.get(eintrag.get("bezirk_slug")) or []
+            kandidaten = [mk for mk in marker if ort_lower in mk["titel"].lower()]
+            for delta_tage in (0, 1, 2):
+                for mk in kandidaten:
+                    artikel = _laumat_ereignis(mk["url"], ort_lower)
+                    if not artikel or not artikel.get("ort_im_text"):
                         continue
-                treffer = mk
-                break
-            if treffer:
-                break
+                    # Datum hart: Artikel-Ereignisdatum, wenn lesbar — sonst Karten-Marker nur am Einsatztag selbst
+                    hart = artikel.get("datum") or (mk["datum"] if delta_tage == 0 else None)
+                    if not hart or not _datum_gleich(hart, eintrag.get("datum")):
+                        continue
+                    if artikel.get("uhr"):
+                        abw = _uhr_abweichung(artikel["uhr"], eintrag.get("uhr"))
+                        if abw is None or abw > BERICHTE_UHR_TOLERANZ_MIN:
+                            continue
+                    treffer = mk
+                    break
+                if treffer:
+                    break
+        elif (eintrag.get("bezirk") or "").startswith("BAZ "):
+            # NÖ-Einsatz: feuerwehren.at-Berichte (national) statt laumat
+            treffer = _berichte_noe_treffer(eintrag)
         if treffer:
             msg = (
                 "📰 <b>Medienbericht zum Einsatz</b>\n"
@@ -4013,6 +4017,231 @@ def check_medienberichte(users):
                 logger.info(f"Berichte-Wache: Medienbericht nachgesendet an {chat_id} ({eintrag.get('ort')})")
             # Send-Fehler: Eintrag bleibt in der Queue und wird in der nächsten Runde erneut versucht
     _berichte_save(zustand)
+
+
+# ═══ Strom-Wache NÖ (Netz NÖ Versorgungsunterbrechungen) ═══
+# Quelle: offizielle JSON-Schnittstelle der Netz NÖ-Störungsseite
+# (netz-noe.at/api/serviceinterruptions/getInterruptions). Liste mit
+# Ort(+PLZ), von/bis und isInterruption-Flag. ALARM-Push nur bei echten
+# Störungen (isInterruption true); geplante Abschaltungen sind Abfrage-Werkzeug
+# (/strom), kein Alarm. Entwarnung, wenn die gemerkte Störung aus der Liste fällt.
+
+NETZNOE_URL = "https://netz-noe.at/api/serviceinterruptions/getInterruptions"
+STROM_NOE_FILE = os.path.join(STATE_DIR, "strom_noe_state.json")
+STROM_NOE_CHECK_MIN = 15
+
+
+def _load_strom_noe_state():
+    state = load_state(STROM_NOE_FILE)
+    if not isinstance(state, dict):
+        state = {}
+    state.setdefault("seen", {})
+    state.setdefault("last_check", 0)
+    return state
+
+
+def _save_strom_noe_state(state):
+    save_state(STROM_NOE_FILE, state)
+
+
+def fetch_strom_noe_alle():
+    """Alle Versorgungsunterbrechungen (Netz NÖ) als Liste."""
+    req = urllib.request.Request(NETZNOE_URL, headers={"User-Agent": LAUMAT_UA})
+    with urllib.request.urlopen(req, timeout=25) as resp:
+        roh = json.loads(resp.read().decode("utf-8", errors="replace"))
+    return roh.get("interruptions") or []
+
+
+def strom_text_fuer_orte_noe(orte):
+    """Formatierter NÖ-Strom-Report für /strom (Alarme + geplante Abschaltungen)."""
+    alle = fetch_strom_noe_alle()
+    if not alle:
+        return None
+    bloecke, alarme, geplant = [], [], []
+    for ort in orte:
+        o = ort.lower().strip()
+        for it in alle:
+            city = (it.get("city") or "")
+            if o not in city.lower():
+                continue
+            zeitraum = f"{(it.get('from') or '')[:16].replace('T', ' ')} – {(it.get('to') or '')[:16].replace('T', ' ')}"
+            zeile = f"• {esc(city)}: {esc(it.get('interruptionText') or '')} ({esc(zeitraum)})"
+            if it.get("isInterruption"):
+                alarme.append(zeile)
+            else:
+                geplant.append(zeile)
+    z = []
+    if alarme:
+        z.append("⚡ <b>Aktuelle Störungen (NÖ):</b>\n" + "\n".join(alarme))
+    if geplant:
+        z.append("🗓️ <b>Geplante Abschaltungen (NÖ):</b>\n" + "\n".join(geplant[:10]))
+    return "\n\n".join(z) if z else None
+
+
+def check_strom_noe_for_users(users):
+    """NÖ-Strom-Wache: echte Störungen (isInterruption true) rund um NÖ-User-Orte
+    pushen, Entwarnung beim Verschwinden (Dedup strom_noe_state.json)."""
+    now = time.time()
+    state = _load_strom_noe_state()
+    if now - state.get("last_check", 0) < STROM_NOE_CHECK_MIN * 60:
+        return
+    state["last_check"] = now
+    orte_map = {}
+    for cid, ud in users.get("users", {}).items():
+        if ud.get("silent"):
+            continue
+        if user_standard_quelle(ud) == "OÖ":
+            continue  # Sir-Regel: NÖ-Wachen alarmieren NÖ-/Misch-User
+        for ort in ud.get("orte", []):
+            orte_map.setdefault(ort.lower().strip(), set()).add(int(cid))
+    if not orte_map:
+        _save_strom_noe_state(state)
+        return
+    try:
+        alle = fetch_strom_noe_alle()
+    except Exception as e:
+        logger.debug(f"Strom-NÖ-Quelle fehlgeschlagen: {e}")
+        _save_strom_noe_state(state)
+        return
+    seen = dict(state.get("seen", {}))
+    aktive_keys = set()
+    for ort_key, chat_ids in orte_map.items():
+        ort_anzeige = _ort_anzeige_cap(ort_key)
+        for it in alle:
+            city = (it.get("city") or "")
+            if ort_key not in city.lower():
+                continue
+            skey = f"sn:{city}|{(it.get('from') or '')[:16]}:{ort_key}"
+            if it.get("isInterruption"):
+                aktive_keys.add(skey)
+                alt_info = seen.get(skey)
+                if not (isinstance(alt_info, dict) and alt_info.get("text") == it.get("interruptionText")):
+                    seen[skey] = {"text": it.get("interruptionText"), "city": city, "ort": ort_anzeige}
+                    msg = ("⚡ <b>Stromausfall NÖ — " + esc(ort_anzeige) + "</b>\n"
+                           + esc(city) + "\n" + esc(it.get("interruptionText") or "Störung")
+                           + "\n🕒 ab " + esc((it.get("from") or "")[11:16]) + " Uhr · Quelle netz-noe.at")
+                    kb_s = {"inline_keyboard": [[btn_karte_url(ort_anzeige), btn_navi_url(ort_anzeige)]]}
+                    for cid in chat_ids:
+                        ud = users.get("users", {}).get(str(cid), {})
+                        if ud.get("silent"):
+                            continue
+                        send_to(cid, msg, reply_markup=kb_s)
+    # Entwarnung: gemerkte Störung ist aus der Liste gefallen (behoben)
+    for skey in list(seen):
+        if skey in aktive_keys:
+            continue
+        info = seen.pop(skey)
+        ort_key2 = skey.rsplit(":", 1)[-1]
+        chat_ids2 = orte_map.get(ort_key2)
+        if not chat_ids2:
+            continue
+        msg = ("🔌 <b>Strom NÖ wieder da — " + esc(info.get("ort") or ort_key2) + "</b>\n"
+               + esc(info.get("city") or "") + " — die Störung wurde behoben.")
+        for cid in chat_ids2:
+            ud = users.get("users", {}).get(str(cid), {})
+            if ud.get("silent"):
+                continue
+            send_to(cid, msg)
+    seen = {k: v for k, v in seen.items() if k in aktive_keys}
+    state["seen"] = seen
+    _save_strom_noe_state(state)
+
+
+# ═══ Medienberichte NÖ (feuerwehren.at-Berichte) ═══
+# laumat.at deckt OÖ ab — für NÖ-Einsätze (kein laumat-Bezirk) nutzt die
+# Medienbericht-Wache die nationalen Feuerwehren.at-Berichte (chronologische
+# Liste, WordPress). Artikel folgen dem gleichen Ereignis-Satz-Muster
+# ("kam es am 10. November 2026 gegen 16:00 Uhr") — dieselben Parser-Regeln
+# wie bei laumat (Ort im Text, Datum hart, Uhrzeit ±30 Minuten).
+
+FWAT_BASE = "https://www.feuerwehren.at/berichte/"
+FWAT_LISTE_URL = FWAT_BASE  # chronologisch, neueste zuerst (Seite 1)
+_LAUMAT_MARKER = None
+
+
+_fwat_cache = [None, 0.0]
+
+
+def _fwat_artikel_liste(seiten=2):
+    """Chronologische Berichte-Liste (feuerwehren.at): {titel, url} (10-min-Cache)."""
+    jetzt = time.time()
+    if _fwat_cache[0] is not None and jetzt - _fwat_cache[1] < 600:
+        return _fwat_cache[0]
+    out, gesehen = [], set()
+    for seite in range(1, max(1, seiten) + 1):
+        url = FWAT_BASE if seite == 1 else f"{FWAT_BASE}page/{seite}/"
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": LAUMAT_UA})
+            with urllib.request.urlopen(req, timeout=25) as resp:
+                htm = resp.read().decode("utf-8", errors="replace")
+        except Exception:
+            continue
+        for m in re.finditer(r'<a href="(https://www\.feuerwehren\.at/berichte/[a-z0-9-]+/\d{4}/\d{1,2}/[^"]+)"[^>]*title="([^"]+)"', htm):
+            url_artikel, titel = m.group(1), unescape(m.group(2)).strip()
+            if url_artikel in gesehen:
+                continue
+            gesehen.add(url_artikel)
+            out.append({"titel": titel, "url": url_artikel})
+        if not htm.strip():
+            break
+    _fwat_cache[0] = out
+    _fwat_cache[1] = jetzt
+    return out
+
+
+def _fwat_ereignis(url, ort_lower):
+    """feuerwehren.at-Artikeltext + Ereignisdatum/-uhrzeit (gleiche Muster wie laumat)."""
+    try:
+        htm = _laumat_fetch(url)
+    except Exception:
+        return None
+    body = re.sub(r"<script.*?</script>", " ", htm, flags=re.S | re.I)
+    body = re.sub(r"<style.*?</style>", " ", body, flags=re.S | re.I)
+    body = re.sub(r"<[^>]+>", " ", body)
+    body = unescape(body)
+    body = re.sub(r"\s+", " ", body)
+    datum, uhr = None, None
+    mm = _LAUMAT_EREG_MONAT_UHR.search(body)
+    nm = _LAUMAT_EREG_NUMERIK_UHR.search(body) if mm is None else None
+    if mm:
+        monat = LAUMAT_MONATE.get(mm.group(2).lower(), 0)
+        if monat:
+            datum = "%02d.%02d.%s" % (int(mm.group(1)), monat, mm.group(3) or "")
+            uhr = "%02d:%02d" % (int(mm.group(4)), int(mm.group(5)))
+    elif nm:
+        datum = "%02d.%02d.%s" % (int(nm.group(1)), int(nm.group(2)), nm.group(3))
+        uhr = "%02d:%02d" % (int(nm.group(4)), int(nm.group(5)))
+    if not datum:
+        mo = _LAUMAT_EREG_MONAT_OHNE_UHR.search(body)
+        if mo:
+            jahr = mo.group(3) or ""
+            datum = "%02d.%02d.%s" % (int(mo.group(1)), LAUMAT_MONATE.get(mo.group(2).lower(), 0), jahr)
+            if datum.endswith(".0"):
+                datum = None
+    return {"datum": datum, "uhr": uhr, "ort_im_text": ort_lower in body.lower()}
+
+
+def _berichte_noe_treffer(eintrag):
+    """Sucht für einen NÖ-Einsatz den feuerwehren.at-Bericht (Ort + Datum + optional Uhr)."""
+    kandidaten = []
+    for art in _fwat_artikel_liste(seiten=2):
+        ort_lower = (eintrag.get("ort") or "").lower().strip()
+        if ort_lower and ort_lower in art["titel"].lower():
+            kandidaten.append(art)
+    start_dt = parse_zeit(eintrag.get("start"))
+    for art in kandidaten[:6]:
+        artikel = _fwat_ereignis(art["url"], (eintrag.get("ort") or "").lower())
+        if not artikel or not artikel.get("ort_im_text"):
+            continue
+        hart = artikel.get("datum")
+        if not hart or not _datum_gleich(hart, eintrag.get("datum")):
+            continue
+        if artikel.get("uhr"):
+            abw = _uhr_abweichung(artikel["uhr"], eintrag.get("uhr"))
+            if abw is None or abw > BERICHTE_UHR_TOLERANZ_MIN:
+                continue
+        return art
+    return None
 
 
 # ═══ Selbstaktualisierung (GitHub-Release) ═══
@@ -4643,12 +4872,18 @@ def handle_bot_commands():
                     if not orte_u:
                         send_to(chat_id, "\u2139\ufe0f Beobachte zuerst Orte mit /ort — Strom-St\u00f6rungen werden f\u00fcr deine Orte selbst gepr\u00fcft.")
                         continue
-                    send_to(chat_id, "\u26a1 St\u00f6rungsstatus wird geladen\u2026")
+                    send_to(chat_id, "\u26a1 St\u00f6rungsstatus wird geladen\u2026 \u00d6N-Quellen (Netz O\u00d6 + Netz N\u00d6)")
                     rep = strom_text_fuer_orte(orte_u)
+                    rep_msg = ""
                     if rep:
-                        send_to(chat_id, "\u26a1 <b>Strom-Versorgung (Netz O\u00d6)</b>\n" + rep)
+                        rep_msg += "\u26a1 <b>Strom-Versorgung (Netz O\u00d6)</b>\n" + rep
+                    rep_noe = strom_text_fuer_orte_noe(orte_u)
+                    if rep_noe:
+                        rep_msg += ("\n\n" if rep_msg else "") + "\u26a1 <b>Strom-Versorgung (Netz N\u00d6)</b>\n" + rep_noe
+                    if rep_msg:
+                        send_to(chat_id, rep_msg)
                     else:
-                        send_to(chat_id, "\u26a1 St\u00f6rungskarte gerade nicht erreichbar \u2014 sp\u00e4ter erneut versuchen.")
+                        send_to(chat_id, "\u26a1 Keine Eintr\u00e4ge f\u00fcr deine Orte (Netz O\u00d6 + Netz N\u00d6 gepr\u00fcft).")
                 except Exception as strom_cmd_err:
                     logger.error(f"/strom Fehler: {strom_cmd_err}")
                     send_to(chat_id, "\u26d4 Fehler bei der St\u00f6rungsabfrage.")
@@ -6370,6 +6605,11 @@ def main():
                 check_pegel_noe_for_users(load_users())
             except Exception as pegel_noe_err:
                 logger.debug(f"Pegel-NÖ-Check Fehler: {pegel_noe_err}")
+            # Strom-Wache NÖ: Versorgungsunterbrechungen Netz NÖ (15-Minuten-Takt)
+            try:
+                check_strom_noe_for_users(load_users())
+            except Exception as strom_noe_err:
+                logger.debug(f"Strom-NÖ-Check Fehler: {strom_noe_err}")
             # Strom-Wache: Netz-OÖ-Störungen, die beobachtete Orte selbst betreffen (15-Minuten-Takt)
             try:
                 check_strom_for_users(load_users())
